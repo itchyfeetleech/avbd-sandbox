@@ -1,0 +1,5 @@
+node_modules/
+test/parity/.cache/
+test/gpu-report.json
+dist/
+*.log

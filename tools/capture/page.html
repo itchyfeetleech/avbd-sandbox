@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AVBD CAPTURE</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #0b0d11;
+    color: #cbd5e1;
+    font: 13px/1.6 ui-monospace, "Cascadia Code", Consolas, monospace;
+  }
+  main { padding: 20px 24px; }
+  h1 { font-size: 14px; font-weight: 600; color: #7dd3fc; margin: 0 0 12px; letter-spacing: .08em; }
+  pre { margin: 0; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<main>
+  <h1>AVBD CAPTURE</h1>
+  <pre id="log">starting…</pre>
+</main>
+<script>
+// Report anything that escapes page.js — including a module that fails to
+// load or parse, which happens before any of its own handlers exist.
+const report = (what) =>
+  navigator.sendBeacon('/failed', new Blob([what], { type: 'text/plain' }));
+addEventListener('error', (e) =>
+  report(e.message ? `${e.message} @ ${e.filename}:${e.lineno}` : `failed to load ${e.target?.src}`),
+  true
+);
+addEventListener('unhandledrejection', (e) => report(`unhandled rejection: ${e.reason?.stack || e.reason}`));
+</script>
+<script type="module" src="./page.js"></script>
+</body>
+</html>

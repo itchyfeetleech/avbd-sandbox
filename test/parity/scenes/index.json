@@ -1,0 +1,14 @@
+[
+  "ground",
+  "spinner",
+  "stack",
+  "stack_ratio",
+  "pyramid",
+  "rope",
+  "heavy_rope",
+  "rope_angular",
+  "static_friction",
+  "spring",
+  "spring_ratio",
+  "tumble"
+]
