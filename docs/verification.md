@@ -60,16 +60,15 @@ Which scenes diverge is derived by measurement rather than declared: a feature c
 live in a scene iff enabling it alone moves any body. Eight of the twelve turn out not to
 exercise any of them — every inertia isotropic, or no springs — and those must still agree
 bit-for-bit in the shipped configuration. They do. That is the part of the shipped
-configuration this test can adjudicate, and it is reported as such rather than as a claim
-about the whole.
+configuration this test can adjudicate.
 
 For the four that do diverge, parity asserts only that the run stays finite and bounded.
-It deliberately does **not** assert closeness, for two reasons: the equations differ, and
-these scenes are chaotic enough that a picometre of perturbation changes where the pile
-lands (see the ensemble discussion in `test/gym.mjs`). A trajectory difference of order 1
-after 180 steps in a toppling pile carries no information about the size of the underlying
-modelling difference. Measured from a shared state instead, one step of the cached-Jacobian
-policy differs by about `2e-7`.
+It does **not** assert closeness, for two reasons: the equations differ, and these scenes
+are chaotic enough that a picometre of perturbation changes where the pile lands (see the
+ensemble discussion in `test/gym.mjs`). A trajectory difference of order 1 after 180 steps
+in a toppling pile carries no information about the size of the underlying modelling
+difference. Measured from a shared state instead, one step of the cached-Jacobian policy
+differs by about `2e-7`.
 
 `node test/parity/run_parity.mjs --attribute` reports which feature accounts for which
 divergence.
@@ -77,9 +76,8 @@ divergence.
 ## What parity structurally cannot decide
 
 No comparison against the authors' demo can adjudicate behaviour the demo does not
-implement. That is not a gap in the harness, it is the shape of the problem — and it falls
-on exactly the parts of this implementation that are not transcription. Those need oracles,
-not a reference program.
+implement, and what it cannot reach is exactly the parts that are not transcription. Those
+need oracles instead.
 
 `test/analytic.mjs` covers that ground by checking against results derived on paper: the
 exact BDF1 free-fall trajectory, the Coulomb threshold `atan(√(μ_a μ_b))`, the cuboid
@@ -92,8 +90,8 @@ Two results decide a shipped behaviour outright.
 the demo uses the body-frame diagonal, equivalent for isotropic inertia and wrong
 otherwise. Contact impulses on a pair are equal and opposite at a shared point, so total
 world angular momentum `L = Σ r×mv + R I Rᵀ ω` is conserved exactly by the continuous
-problem — a law neither program gets a vote on. Through an off-axis impact between two
-1×2×4 boxes, the rotated form drifts **0.47%** against the body-frame form's **17.9%**,
+problem. Through an off-axis impact between two 1×2×4 boxes, the rotated form drifts
+**0.47%** against the body-frame form's **17.9%**,
 and 24× the iterations does not rescue it (19.3% at 240). That is a modelling error, not a
 convergence residual. For a cube the two agree to `1e-15`, as the algebra requires.
 
@@ -111,8 +109,8 @@ scene-dependent and there is no measurable CPU cost saving. The numbers are in t
 comment in `solver.js`. It stays on because it is the self-consistent reading of Section 4,
 not because it measured better.
 
-Two of its CPU-reference checks are **characterisations rather than correctness
-proofs**, and say so:
+Two of `test/analytic.mjs`'s CPU-reference checks are **characterisations rather than
+correctness proofs**, and say so:
 
 - A resting body sinks by exactly one `collisionMargin` — 10 mm absolute, so 20% of a
   5 cm body.
