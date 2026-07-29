@@ -122,11 +122,17 @@ const VARIANTS = {
 
   // --- Splitting paperExactSprings -----------------------------------------
   //
-  // The flag bundles two independent paper features. `spring_ladder` shows the
-  // Equation 16 ramp is responsible for all of the material error it causes
+  // The flag bundles two independent paper features. `spring_ladder` showed the
+  // Equation 16 ramp was responsible for all of the material error it caused
   // (a 1e6 N/m spring solving as 7.5e4 N/m), while the Equation 17 geometric
-  // stiffness term is exactly neutral there. These isolate each, and `proposed`
-  // is the shipped configuration with only the ramp withdrawn.
+  // stiffness term was exactly neutral there.
+  //
+  // That measurement has since been acted on: the ramp is OFF in the shipped
+  // configuration, because a spring's stiffness is a material law and not a
+  // penalty parameter to be ramped (see solver.js `springStiffnessRamp`). So
+  // `paper` and `proposed` are now the same configuration and both read zero on
+  // that fixture's oracle. `springRamp` keeps the withdrawn behaviour reachable,
+  // which is what keeps the regression measurable.
   springGeo: {
     rotatedInertia: false, paperExactSprings: false, cachedContactJacobians: false,
     springGeometricStiffness: true,

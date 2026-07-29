@@ -6,8 +6,10 @@
 
 ```bash
 bash test/parity/build_reference.sh   # fetch + compile the authors' solver
-node test/parity/run_parity.mjs       # diff full trajectories
+node test/parity/run_parity.mjs       # diff full trajectories, shipped and demo configs
+node test/parity/run_parity.mjs --attribute   # ...and which feature causes which divergence
 node test/analytic.mjs                # closed-form physics oracles
+node test/gym.mjs                     # score every variant over the zoo, with oracles
 node test/convergence.mjs             # settled penetration and energy residuals
 node test/pacing.mjs                  # fixed-timestep loop at every refresh rate
 node test/smoke.mjs                   # every scene stays finite and stable
@@ -40,19 +42,74 @@ finds one on `PATH`, at `~/.deno/bin/deno`, or at `$DENO`.
 precision matches JavaScript — then diffs complete body trajectories against this
 implementation.
 
-> 12/12 scenes agree **bit-for-bit** (max relative error `0.000e+0`) over 600 steps,
-> with both broad phases.
+It runs **both** configurations, and the distinction matters:
 
-Parity is evidence about an *implementation*, though, and it deliberately runs in a
-configuration the sandbox does not ship: it pins `rotatedInertia`, `paperExactSprings`
-and `cachedContactJacobians` off and α to 0.99, so the comparison isolates the solver.
+| | what it means | result |
+|---|---|---|
+| **demo** | the three paper features reverted to the demo's behaviour, isolating the solver | 12/12 scenes **bit-for-bit**, max relative error `0.000e+0` |
+| **shipped** | what the sandbox actually runs | 8/12 bit-for-bit; 4 diverge, all stable |
 
-## Closed-form oracles
+The three features are `rotatedInertia`, `paperExactSprings` and
+`cachedContactJacobians` — places where the paper specifies something the authors' 3D
+demo does not do. Where they are live the two programs are deliberately solving different
+equations, so agreement is not the goal and divergence is not a defect. α is the sandbox's
+shipped 0.95 in both runs, passed identically to each side, so it is not a source of
+difference.
 
-`test/analytic.mjs` covers what parity structurally cannot, by checking against results
-derived on paper rather than against another program: the exact BDF1 free-fall
-trajectory, the Coulomb threshold `atan(√(μ_a μ_b))`, the cuboid inertia tensor, and
-momentum conservation through an impact. Those hold in any configuration.
+Which scenes diverge is derived by measurement rather than declared: a feature counts as
+live in a scene iff enabling it alone moves any body. Eight of the twelve turn out not to
+exercise any of them — every inertia isotropic, or no springs — and those must still agree
+bit-for-bit in the shipped configuration. They do. That is the part of the shipped
+configuration this test can adjudicate, and it is reported as such rather than as a claim
+about the whole.
+
+For the four that do diverge, parity asserts only that the run stays finite and bounded.
+It deliberately does **not** assert closeness, for two reasons: the equations differ, and
+these scenes are chaotic enough that a picometre of perturbation changes where the pile
+lands (see the ensemble discussion in `test/gym.mjs`). A trajectory difference of order 1
+after 180 steps in a toppling pile carries no information about the size of the underlying
+modelling difference. Measured from a shared state instead, one step of the cached-Jacobian
+policy differs by about `2e-7`.
+
+`node test/parity/run_parity.mjs --attribute` reports which feature accounts for which
+divergence.
+
+## What parity structurally cannot decide
+
+No comparison against the authors' demo can adjudicate behaviour the demo does not
+implement. That is not a gap in the harness, it is the shape of the problem — and it falls
+on exactly the parts of this implementation that are not transcription. Those need oracles,
+not a reference program.
+
+`test/analytic.mjs` covers that ground by checking against results derived on paper: the
+exact BDF1 free-fall trajectory, the Coulomb threshold `atan(√(μ_a μ_b))`, the cuboid
+inertia tensor, and momentum conservation through an impact. Those hold in any
+configuration.
+
+Two results decide a shipped behaviour outright.
+
+**Rotated inertia is right.** Equation 8's mass matrix uses the rotated moment `R I Rᵀ`;
+the demo uses the body-frame diagonal, equivalent for isotropic inertia and wrong
+otherwise. Contact impulses on a pair are equal and opposite at a shared point, so total
+world angular momentum `L = Σ r×mv + R I Rᵀ ω` is conserved exactly by the continuous
+problem — a law neither program gets a vote on. Through an off-axis impact between two
+1×2×4 boxes, the rotated form drifts **0.47%** against the body-frame form's **17.9%**,
+and 24× the iterations does not rescue it (19.3% at 240). That is a modelling error, not a
+convergence residual. For a cube the two agree to `1e-15`, as the algebra requires.
+
+**The Equation 16 spring ramp was wrong, and is gone.** `test/fixtures.mjs`
+(`spring_ladder`) hangs a 1000:1 stiffness chain at its exact analytic equilibrium, which a
+correct solver leaves alone. Ramping a spring's stiffness treats a material law as a
+penalty parameter, so within the iteration budget the spring is simply softer than the
+material it represents: a 1e6 N/m spring solved as roughly 7.5e4 N/m, and the chain sagged
+away from an equilibrium it had been handed for free. The ramp is now off for springs and
+the fixture's oracle error is exactly zero. Hard constraints still ramp, where the
+stiffness genuinely is a penalty parameter and Equation 16 is right.
+
+The third feature, `cachedContactJacobians`, is a wash rather than a win — accuracy is
+scene-dependent and there is no measurable CPU cost saving. The numbers are in the flag's
+comment in `solver.js`. It stays on because it is the self-consistent reading of Section 4,
+not because it measured better.
 
 Two of its CPU-reference checks are **characterisations rather than correctness
 proofs**, and say so:

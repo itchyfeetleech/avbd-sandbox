@@ -171,29 +171,48 @@ export class Solver {
     this.rotatedInertia = true;
 
     /**
-     * Apply the paper's treatment of finite-stiffness forces to springs:
-     * the Equation 16 stiffness ramp (Section 3.4) and the Equation 17
-     * geometric stiffness term. The authors' 3D demo does neither. Set false to
-     * reproduce that demo bit-for-bit.
+     * Apply the paper's treatment of finite-stiffness forces to springs: the
+     * Equation 17 geometric stiffness term, and — where it belongs — the
+     * Equation 16 stiffness ramp. The authors' 3D demo does neither. Set false
+     * to reproduce that demo bit-for-bit.
+     *
+     * This is a bundle switch over the two sub-flags below. Read those for what
+     * the shipped configuration actually does, which is NOT "both on": the ramp
+     * is off by default because it is measurably wrong for springs.
      */
     this.paperExactSprings = true;
 
     /**
-     * The two features `paperExactSprings` bundles, separable for measurement.
-     * Null means "follow `paperExactSprings`", which is the shipped behaviour;
-     * set either to a boolean to select it independently. They are independent
-     * in the paper — Equation 16 ramps the penalty stiffness, Equation 17 adds
-     * the geometric stiffness term — and `test/gym.mjs` shows they behave very
-     * differently on a spring whose stiffness is material rather than a penalty
-     * parameter. See `test/fixtures.mjs` (`spring_ladder`).
+     * Equation 16's stiffness ramp, applied to springs. DEFAULT OFF, and this
+     * is a physics decision rather than a performance one.
      *
-     * CPU ONLY. The GPU backend packs a single FLAG_PAPER_SPRINGS bit derived
-     * from `paperExactSprings`, so overriding either of these makes the two
-     * backends disagree. They exist for measurement; adopting a split as the
-     * shipped default would need the same split in the WGSL spring kernels
-     * first, verified with `node tools/gputest.mjs`.
+     * Equation 16 ramps a PENALTY stiffness: the augmented Lagrangian raises k
+     * until a constraint that is supposed to hold exactly does hold. A spring's
+     * stiffness is not a penalty parameter, it is the material law — the answer,
+     * not a knob for reaching the answer. Ramping it means the spring solves
+     * with k⁽ⁿ⁾ < k* until the ramp catches up, so within the iteration budget
+     * the spring is simply softer than the material it represents.
+     *
+     * `test/fixtures.mjs` (`spring_ladder`) measures this against a closed-form
+     * equilibrium: a chain built at its exact analytic rest state, which a
+     * correct solver leaves alone. With the ramp on, a 1e6 N/m spring solves as
+     * roughly 7.5e4 N/m and the chain sags away from an equilibrium it was
+     * handed for free; with it off the fixture's oracle error is exactly zero.
+     * `node test/gym.mjs --scene=spring_ladder` reproduces both.
+     *
+     * Hard constraints still ramp — see joint.js and the contact path, where the
+     * stiffness genuinely is a penalty parameter and Equation 16 is right.
      */
-    this.springStiffnessRamp = null;
+    this.springStiffnessRamp = false;
+
+    /**
+     * Equation 17's geometric stiffness term for springs. Follows
+     * `paperExactSprings`, so ON by default. The 3D demo omits it; the same
+     * fixture shows it is exactly neutral at equilibrium and it improves the
+     * local model away from it, so there is no reason not to.
+     *
+     * Null means "follow `paperExactSprings`".
+     */
     this.springGeometricStiffness = null;
 
     /**
@@ -203,9 +222,27 @@ export class Solver {
      * does this; their 3D demo rebuilds the Jacobian from the current
      * orientation on every evaluation, and so did this port.
      *
-     * The difference is second order in the step, which is exactly the term the
-     * same Taylor expansion already discards — so caching is the self-consistent
-     * choice as well as the cheaper one. Set false to reproduce the 3D demo.
+     * The difference is the term the same Taylor expansion already discards, so
+     * caching is the self-consistent choice. What it is NOT, on measurement, is
+     * clearly better or clearly cheaper:
+     *
+     *   accuracy  a wash, and scene-dependent. Over 240 steps at the shipped
+     *             ten iterations, worst constraint residual is 2.4x better
+     *             cached on `tumble` and 1.5x worse on `pyramid`, with three
+     *             parity scenes exactly tied. Mean residuals differ by a few
+     *             percent either way.
+     *   cost      no measurable win on the CPU path — 2.27 vs 2.21 ms/step on
+     *             `pyramid`, i.e. slightly slower. The saving the caching buys
+     *             is small against the rest of the step, and the cache's own
+     *             memory traffic eats it. The GPU path is where it is meant to
+     *             pay, by keeping per-iteration work off the critical path.
+     *
+     * What the measurement does support: from a shared state the two policies
+     * differ by ~2e-7 in a single step and that difference shrinks faster than
+     * dt, so the O(1) trajectory divergence parity reports on chaotic scenes is
+     * amplification, not a modelling disagreement of that size.
+     *
+     * Set false to reproduce the 3D demo.
      */
     this.cachedContactJacobians = true;
 

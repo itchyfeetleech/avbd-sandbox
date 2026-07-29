@@ -102,11 +102,47 @@ for (const m of SHADER_SOURCE.matchAll(/\bGU\.(\w+)/g)) {
   }
 }
 
+// Flag bits: every GU.flags bit must be a distinct power of two, and every
+// FLAG_ the shader tests must be one the host actually defines. Splitting one
+// behaviour into two bits is exactly where a collision or a stale name slips in,
+// and either would silently make the GPU ignore a setting the CPU honours.
+const flagBits = Object.entries(layout).filter(([n]) => n.startsWith('FLAG_'));
+const seenBits = new Map();
+for (const [name, value] of flagBits) {
+  if (!Number.isInteger(value) || value <= 0 || (value & (value - 1)) !== 0) {
+    console.log(`  ${name} = ${value} is not a positive power of two`);
+    findings++;
+  }
+  if (seenBits.has(value)) {
+    console.log(`  ${name} collides with ${seenBits.get(value)} (both ${value})`);
+    findings++;
+  }
+  seenBits.set(value, name);
+}
+// The shader declares its own FLAG_ constants, interpolated from the host — and
+// a couple under shorter names (FLAG_POST_STAB for FLAG_POST_STABILIZE), so
+// matching by name would be wrong. Match by VALUE instead: every flag constant
+// the shader declares must be a bit the host actually exports, which is what
+// catches a hardcoded number drifting away from layout.js.
+const hostValues = new Set(flagBits.map(([, v]) => v));
+let declaredFlags = 0;
+for (const m of SHADER_SOURCE.matchAll(/const\s+(FLAG_\w+)\s*=\s*(\d+)u\s*;/g)) {
+  declaredFlags++;
+  if (!hostValues.has(Number(m[2]))) {
+    console.log(
+      `  shader declares ${m[1]} = ${m[2]}, which is not any host FLAG_ bit ` +
+        `(${[...hostValues].sort((a, b) => a - b).join(', ')})`
+    );
+    findings++;
+  }
+}
+
 if (findings) {
   console.log(`\n${findings} problem(s) found.`);
   process.exit(1);
 }
 console.log(
   'WGSL: no reserved keywords used as identifiers; ' +
-    `${entryPoints.size} entry points and ${declared.size} uniforms agree with the host.`
+    `${entryPoints.size} entry points and ${declared.size} uniforms agree with the host; ` +
+    `${flagBits.length} flag bits distinct, ${declaredFlags} declared in the shader.`
 );

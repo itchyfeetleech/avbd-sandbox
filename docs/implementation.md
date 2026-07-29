@@ -28,13 +28,25 @@ Algorithm 1 in full:
 
 ## Where this follows the paper rather than the demo
 
-Two places differ from the authors' 3D demo. Both are toggleable in the UI, so the
-difference can be seen live:
+Three places differ from the authors' 3D demo. The first two are toggleable in the UI, so
+the difference can be seen live. None of them can be checked by comparing against that
+demo — it does not implement them — so each is settled by an oracle instead; see
+[Verification](verification.md).
 
-- **Rotated inertia tensor** `R I Rᵀ`. Eq. 8 specifies "the rotated moment"; the demo
-  uses the body-frame diagonal, which is equivalent only for cubes.
-- **Paper-exact springs** — the Eq. 16 stiffness ramp of Section 3.4 and the Eq. 17
-  geometric stiffness term, neither of which the 3D demo applies.
+- **Rotated inertia tensor** `R I Rᵀ`. Eq. 8 specifies "the rotated moment"; the demo uses
+  the body-frame diagonal, which is equivalent only for isotropic inertia. Decided by
+  angular momentum conservation through an off-axis impact: the rotated form drifts 0.47%
+  where the body-frame form drifts 17.9%, and more iterations do not close the gap.
+- **Eq. 17 geometric stiffness for springs**, which the 3D demo omits. Exactly neutral at
+  a closed-form equilibrium and a better local model away from it.
+- **Cached contact Jacobians** — Section 4's "compute these terms once at the beginning of
+  time step", where the demo rebuilds them from the current iterate. Self-consistent with
+  the discretisation, and measurably a wash on both accuracy and CPU cost.
+
+One place deliberately does **not** follow the paper's letter: Eq. 16's stiffness ramp is
+applied to hard constraints but **not** to springs. Ramping a spring's stiffness treats a
+material law as a penalty parameter, and measurably solves a 1e6 N/m spring as roughly
+7.5e4 N/m. It is reachable via `springStiffnessRamp` for measurement.
 
 ## The GPU backend
 

@@ -31,8 +31,8 @@ import {
   BODY_STATIC_STRIDE, JOINT_STRIDE, SPRING_STRIDE, SLOT_HEADER, CONTACT_STRIDE, SLOT_STRIDE,
   CTR_PAIRS, CTR_SLOTS, CTR_ADJ, CTR_OVERFLOW, CTR_CONTACTS, CTR_COUNT,
   STAT_MAX_PEN, STAT_MAX_LAMBDA, STAT_MAX_PENALTY,
-  FLAG_POST_STABILIZE, FLAG_ROT_INERTIA, FLAG_PAPER_SPRINGS, FLAG_COLOR_OVERRIDE,
-  FLAG_CACHED_JAC,
+  FLAG_POST_STABILIZE, FLAG_ROT_INERTIA, FLAG_SPRING_RAMP, FLAG_COLOR_OVERRIDE,
+  FLAG_CACHED_JAC, FLAG_SPRING_GEOMETRIC,
   BFLAG_DYNAMIC, BFLAG_LARGE, BFLAG_SPHERE, BS_MASS, BS_MOMENT, BS_SIZE,
   BS_STATIC_FRICTION, BS_DYNAMIC_FRICTION, BS_RESTITUTION,
   BS_RADIUS, BS_FLAGS, BS_CONTACT_OFFSET, BS_REST_OFFSET, BS_EARLIER_REACH,
@@ -73,7 +73,8 @@ const NONE = 0xffffffffu;
 
 const FLAG_POST_STAB = ${FLAG_POST_STABILIZE}u;
 const FLAG_ROT_INERTIA = ${FLAG_ROT_INERTIA}u;
-const FLAG_PAPER_SPRINGS = ${FLAG_PAPER_SPRINGS}u;
+const FLAG_SPRING_RAMP = ${FLAG_SPRING_RAMP}u;
+const FLAG_SPRING_GEOMETRIC = ${FLAG_SPRING_GEOMETRIC}u;
 const FLAG_COLOR_OVERRIDE = ${FLAG_COLOR_OVERRIDE}u;
 const FLAG_CACHED_JAC = ${FLAG_CACHED_JAC}u;
 const BFLAG_DYNAMIC = ${BFLAG_DYNAMIC}u;
@@ -1467,8 +1468,8 @@ fn prepare_springs(@builtin(global_invocation_id) gid: vec3u) {
 
   let stiff = CONS[sb + 6u];
 
-  if ((GU.flags & FLAG_PAPER_SPRINGS) == 0u) {
-    CONS[sb + 8u] = stiff; // reference-demo mode: no ramp
+  if ((GU.flags & FLAG_SPRING_RAMP) == 0u) {
+    CONS[sb + 8u] = stiff; // no ramp: the material stiffness is the answer
     return;
   }
   var pen = CONS[sb + 8u];
@@ -2024,7 +2025,7 @@ fn primal(@builtin(global_invocation_id) gid: vec3u) {
         rhsLin = rhsLin + jLin * f;
         rhsAng = rhsAng + jAng * f;
 
-        if ((GU.flags & FLAG_PAPER_SPRINGS) != 0u) {
+        if ((GU.flags & FLAG_SPRING_GEOMETRIC) != 0u) {
           // G̃ for the distance constraint: 6-column norms of the full second
           // derivative, lumped onto both diagonals (see spring.js)
           var sgn = 1.0;
@@ -2320,8 +2321,8 @@ fn dual_springs(@builtin(global_invocation_id) gid: vec3u) {
     }
   }
 
-  // Tearing is independent of the paper/demo spring-ramp toggle.
-  if ((GU.flags & FLAG_PAPER_SPRINGS) == 0u) { return; }
+  // Tearing is independent of the spring-ramp toggle.
+  if ((GU.flags & FLAG_SPRING_RAMP) == 0u) { return; }
   // 'target' is a WGSL reserved keyword, hence 'cap'.
   let cap = min(CONS[sb + 6u], GU.penaltyMax);
   CONS[sb + 8u] = min(CONS[sb + 8u] + GU.betaLin * abs(C), cap); // Eq. 16

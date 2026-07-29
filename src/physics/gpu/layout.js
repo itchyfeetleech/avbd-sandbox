@@ -156,12 +156,22 @@ export const CTR_COUNT = 8;
 // ---- global flag bits (GU.flags) ----
 export const FLAG_POST_STABILIZE = 1;
 export const FLAG_ROT_INERTIA = 2;
-export const FLAG_PAPER_SPRINGS = 4;
+/**
+ * Equation 16's stiffness ramp for springs. Off in the shipped configuration:
+ * a spring's stiffness is a material law, not a penalty parameter. See
+ * solver.js `springStiffnessRamp`.
+ */
+export const FLAG_SPRING_RAMP = 4;
 // Verification only: color tables were uploaded from the CPU; the clear pass
 // must not wipe them and the coloring kernels are skipped.
 export const FLAG_COLOR_OVERRIDE = 8;
 /** Evaluate contact Jacobians once at x_t and reuse them (paper Section 4). */
 export const FLAG_CACHED_JAC = 16;
+/**
+ * Equation 17's geometric stiffness term for springs. Independent of the ramp
+ * bit above, and on in the shipped configuration.
+ */
+export const FLAG_SPRING_GEOMETRIC = 32;
 
 // ---- body flag bits (bStatic[BS_FLAGS]) ----
 export const BFLAG_DYNAMIC = 1;
