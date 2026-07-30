@@ -127,12 +127,10 @@ const VARIANTS = {
   // (a 1e6 N/m spring solving as 7.5e4 N/m), while the Equation 17 geometric
   // stiffness term was exactly neutral there.
   //
-  // That measurement has since been acted on: the ramp is OFF in the shipped
-  // configuration, because a spring's stiffness is a material law and not a
-  // penalty parameter to be ramped (see solver.js `springStiffnessRamp`). So
-  // `paper` and `proposed` are now the same configuration and both read zero on
-  // that fixture's oracle. `springRamp` keeps the withdrawn behaviour reachable,
-  // which is what keeps the regression measurable.
+  // That has since been acted on: the ramp is OFF in the shipped configuration
+  // (see solver.js `springStiffnessRamp`), so `paper` and `proposed` are now the
+  // same and both read zero on that oracle. `springRamp` keeps the withdrawn
+  // behaviour reachable so the regression stays measurable.
   springGeo: {
     rotatedInertia: false, paperExactSprings: false, cachedContactJacobians: false,
     springGeometricStiffness: true,

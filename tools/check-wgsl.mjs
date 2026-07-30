@@ -102,10 +102,9 @@ for (const m of SHADER_SOURCE.matchAll(/\bGU\.(\w+)/g)) {
   }
 }
 
-// Flag bits: every GU.flags bit must be a distinct power of two, and every
-// FLAG_ the shader tests must be one the host actually defines. Splitting one
-// behaviour into two bits is exactly where a collision or a stale name slips in,
-// and either would silently make the GPU ignore a setting the CPU honours.
+// Flag bits must be distinct powers of two. Splitting one behaviour into two
+// bits is where a collision slips in, and it would silently make the GPU ignore
+// a setting the CPU honours.
 const flagBits = Object.entries(layout).filter(([n]) => n.startsWith('FLAG_'));
 const seenBits = new Map();
 for (const [name, value] of flagBits) {
@@ -119,11 +118,9 @@ for (const [name, value] of flagBits) {
   }
   seenBits.set(value, name);
 }
-// The shader declares its own FLAG_ constants, interpolated from the host — and
-// a couple under shorter names (FLAG_POST_STAB for FLAG_POST_STABILIZE), so
-// matching by name would be wrong. Match by VALUE instead: every flag constant
-// the shader declares must be a bit the host actually exports, which is what
-// catches a hardcoded number drifting away from layout.js.
+// The shader declares some flags under shorter names (FLAG_POST_STAB for
+// FLAG_POST_STABILIZE), so match by value, not name: each value it declares must
+// be a bit the host exports. Catches a hardcoded number drifting from layout.js.
 const hostValues = new Set(flagBits.map(([, v]) => v));
 let declaredFlags = 0;
 for (const m of SHADER_SOURCE.matchAll(/const\s+(FLAG_\w+)\s*=\s*(\d+)u\s*;/g)) {

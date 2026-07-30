@@ -56,10 +56,8 @@ const GRAVITY = -10.0;
  * the spring is effectively softer than its material stiffness, and the chain
  * hangs measurably lower than it should.
  *
- * This fixture is why the ramp was withdrawn: it read 1.91e-3 with the ramp on
- * and exactly zero with it off, which is the difference between a solver that
- * holds an equilibrium it was handed and one that sags away from it. Run
- * `node test/gym.mjs --scene=spring_ladder` to see both.
+ * This fixture is why the ramp was withdrawn: 1.91e-3 with it on, exactly zero
+ * with it off. `node test/gym.mjs --scene=spring_ladder` shows both.
  */
 const SPRING_LADDER = {
   id: 'spring_ladder',

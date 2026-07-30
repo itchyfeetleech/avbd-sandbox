@@ -12,27 +12,19 @@
  *
  * Two configurations are meaningful, and the default runs both:
  *
- *   shipped  what the sandbox actually runs. Three of its behaviours follow the
- *            paper where the authors' 3D demo does something simpler, so exact
- *            agreement is NOT expected wherever those behaviours are live: the
- *            two programs are solving deliberately different equations there.
- *            What this run asserts is narrower and checkable — that the
- *            divergence appears only in scenes where a paper feature is active,
- *            and that it stays within `--shipped-tol` of the reference rather
- *            than growing without bound.
+ *   shipped  what the sandbox runs. Three of its behaviours follow the paper
+ *            where the authors' 3D demo does something simpler, so exact
+ *            agreement is not expected where those are live. What is asserted
+ *            there is stability, not closeness; see BOUND.
+ *   demo     those three reverted, isolating the solver. Agrees bit-for-bit.
  *
- *   demo     the three behaviours reverted to the demo's, isolating the solver
- *            itself. This is the configuration that agrees bit-for-bit.
- *
- * A scene where no paper feature is live must agree bit-for-bit in BOTH — that
- * is the part of the shipped configuration the reference can adjudicate. Which
- * features are live per scene is asserted from scene content, not assumed; see
- * FEATURE_LIVE below.
+ * A scene where no paper feature is live must agree bit-for-bit in BOTH. Which
+ * features are live per scene is measured, not declared; see liveFeatures.
  *
  * Usage:
  *   node test/parity/run_parity.mjs [--steps N] [--tol T] [--scene NAME] [-v]
  *                                   [--config shipped|demo|both]
- *                                   [--attribute] [--shipped-tol T]
+ *                                   [--attribute] [--bound N]
  */
 
 import { execFileSync } from 'node:child_process';
@@ -61,23 +53,13 @@ const CONFIG = getArg('--config', 'both');
 const ATTRIBUTE = argv.includes('--attribute');
 
 /**
- * Where a paper feature is live, the shipped configuration is NOT held to a
- * closeness bound against the reference, and it would be dishonest to pretend
- * otherwise. Two reasons:
- *
- *   1. The two programs are solving different equations there, so a difference
- *      is the expected outcome, not a defect.
- *   2. These scenes are chaotic. Displacing every body by a picometre changes
- *      where the pile ends up (see the ensemble discussion in test/gym.mjs), so
- *      a trajectory difference of order 1 after 180 steps carries no
- *      information about the size of the underlying modelling difference.
- *
- * What IS asserted is stability: the shipped run must stay finite and stay in
- * the same region of space, rather than drifting off or exploding. The
- * divergence is reported for the record, not graded. Which side is more nearly
- * right is settled by the derived oracles in test/analytic.mjs and the
- * closed-form fixtures in test/fixtures.mjs, since the demo cannot adjudicate
- * behaviour it does not implement.
+ * Where a paper feature is live the shipped configuration is not held to a
+ * closeness bound: the two programs solve different equations there, and these
+ * scenes are chaotic enough that a picometre changes where the pile lands (see
+ * test/gym.mjs). A trajectory difference of order 1 after 180 steps says nothing
+ * about the size of the modelling difference, so only stability is asserted and
+ * the divergence is reported. Which side is right is settled by the oracles in
+ * test/analytic.mjs and test/fixtures.mjs.
  */
 const BOUND = Number(getArg('--bound', 1e4));
 
@@ -159,14 +141,12 @@ function runReference(scenePath) {
 /**
  * Run the JavaScript engine and collect the same trajectory.
  *
- * `overrides` selects the configuration. Passing none runs the sandbox's
- * shipped defaults, so this test exercises what users actually get; passing
- * DEMO_CONFIG reverts the three paper features to the demo's behaviour.
+ * `overrides` selects the configuration: none runs the shipped defaults,
+ * DEMO_CONFIG reverts the three paper features.
  *
- * Post-stabilization is pinned off, which is not one of the paper features
- * being reverted: off is also the sandbox's shipped default, and the 3D
- * reference implements only the Equation 18 alpha mode (post-stabilization
- * comes from the authors' 2D reference).
+ * Post-stabilization is pinned off. That is not one of the features being
+ * reverted — off is also the shipped default, and the 3D reference implements
+ * only the Equation 18 alpha mode.
  */
 function runJs(scenePath, overrides = {}) {
   const solver = new Solver();
@@ -237,12 +217,9 @@ function compare(a, b, tol) {
 }
 
 /**
- * Which paper features actually change this scene's trajectory.
- *
- * Determined by measurement rather than by reading the scene: a feature is live
- * iff enabling it alone, on top of the demo configuration, moves any body. That
- * is exactly the property the parity claim below needs, and it cannot drift out
- * of date the way a hand-maintained table of "which scenes have springs" would.
+ * Which paper features change this scene's trajectory. Measured rather than read
+ * off the scene: a feature is live iff enabling it alone moves a body, so this
+ * cannot drift out of date the way a hand-kept table would.
  */
 function liveFeatures(scenePath, demoTrajectory) {
   const live = [];

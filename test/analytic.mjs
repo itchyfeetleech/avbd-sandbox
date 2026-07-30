@@ -6,13 +6,10 @@
  * but it is evidence about an *implementation*, not about physics, and two
  * implementations can agree bit for bit on the same mistake.
  *
- * Parity is also structurally unable to judge the handful of places where this
- * implementation follows the paper and the authors' 3D demo does something
- * simpler: no comparison against that demo can adjudicate behaviour the demo
- * does not implement. `test/parity` therefore runs the shipped configuration
- * and reports where it diverges, but only grades it where those features are
- * inert. Deciding whether the shipped behaviour is *right* is this file's job,
- * and check 8 below is where it happens.
+ * Parity also cannot judge the places where this implementation follows the
+ * paper and the demo does something simpler — no comparison against that demo
+ * can adjudicate behaviour it does not implement. Check 8 below is where the
+ * shipped behaviour gets decided instead.
  *
  * This file checks the simulation against results derived on paper: the exact
  * BDF1 free-fall trajectory, the Coulomb threshold, the cuboid inertia tensor,
@@ -279,29 +276,24 @@ function angularMomentumDrift(rotated, size, w0, steps) {
 // ---------------------------------------------------------------------------
 // 8. Rotated inertia, decided by a conservation law.
 //
-//    This is the check that judges a shipped behaviour the reference cannot
-//    speak to. Equation 8's mass matrix uses "the rotated moment of the rigid
-//    body", R I Rᵀ; the authors' 3D demo uses the body-frame diagonal unrotated,
-//    which is exactly equivalent for isotropic inertia and wrong otherwise.
-//    Parity cannot adjudicate that, because parity only runs where the two
+//    Equation 8's mass matrix uses "the rotated moment", R I Rᵀ; the demo uses
+//    the body-frame diagonal, equivalent for isotropic inertia and wrong
+//    otherwise. Parity cannot adjudicate that, since it only runs where the two
 //    agree by construction.
 //
-//    A conservation law can. Contact impulses on a colliding pair are equal and
-//    opposite at a shared point, so the continuous problem conserves total world
-//    angular momentum about a fixed origin exactly:
+//    Contact impulses on a pair are equal and opposite at a shared point, so the
+//    continuous problem conserves total world angular momentum about a fixed
+//    origin exactly:
 //
 //        L = Σ_i [ r_i × m_i v_i  +  R_i I_i R_iᵀ ω_i ]
 //
-//    L is evaluated with the rotated tensor in BOTH runs, because that is the
-//    physical definition of angular momentum regardless of what the solver's
-//    mass matrix happens to use. Bodies start with ω = 0 so the known absence of
-//    a gyroscopic term (check 7) cannot pollute the measurement: that error only
-//    acts on an already-rotating body, and what is measured here is the single
-//    step in which the impulse is applied.
+//    L uses the rotated tensor in BOTH runs — that is the definition of angular
+//    momentum regardless of what the solver's mass matrix uses. Bodies start with
+//    ω = 0 so the missing gyroscopic term (check 7) cannot pollute the result: it
+//    only acts on an already-rotating body, and this measures the impulse step.
 //
-//    The gap does not close as the iteration budget grows, which is what
-//    separates this from a convergence residual: the body-frame tensor is
-//    solving the wrong equation, not the right one imprecisely.
+//    The gap does not close with more iterations, which is what separates a
+//    modelling error from a convergence residual.
 // ---------------------------------------------------------------------------
 function impactAngularMomentumDrift({ rotated, iterations, size }) {
   const s = new Solver();
@@ -312,9 +304,9 @@ function impactAngularMomentumDrift({ rotated, iterations, size }) {
   const a = new Rigid(s, size, 1, 0, [-2.2, 0.7, 0], [3, 0, 0]);
   const b = new Rigid(s, size, 1, 0, [2.2, -0.7, 0], [-3, 0, 0]);
 
-  // Rotate both away from the world axes. With an isotropic body this is
-  // irrelevant; with an anisotropic one it is exactly what the body-frame
-  // tensor gets wrong. quat.fromAxisAngle does not normalise, so pass unit axes.
+  // Rotate both off the world axes: irrelevant for an isotropic body, and
+  // exactly what the body-frame tensor gets wrong otherwise.
+  // quat.fromAxisAngle does not normalise, so pass unit axes.
   const unit = (x, y, z) => {
     const n = Math.hypot(x, y, z);
     return [x / n, y / n, z / n];
@@ -384,9 +376,7 @@ function impactAngularMomentumDrift({ rotated, iterations, size }) {
       ` (${(bodyFrame10 / rotated10).toFixed(0)}x)`
   );
 
-  // Not a convergence residual: 24x the iterations does not rescue the
-  // body-frame tensor, because it is the wrong tensor rather than an
-  // under-solved one.
+  // 24x the iterations does not rescue the body-frame tensor.
   const bodyFrame240 = impactAngularMomentumDrift({ rotated: false, iterations: 240, size: BOX });
   check(
     'body-frame inertia error is a modelling error, not a residual',
@@ -394,8 +384,8 @@ function impactAngularMomentumDrift({ rotated, iterations, size }) {
     `10 iters ${(bodyFrame10 * 100).toFixed(2)}%, 240 iters ${(bodyFrame240 * 100).toFixed(2)}%`
   );
 
-  // Control: for isotropic inertia the two forms are algebraically identical,
-  // so any difference at all would mean the rotated path is not R I Rᵀ.
+  // Control: isotropic inertia makes the two forms algebraically identical, so
+  // any difference would mean the rotated path is not R I Rᵀ.
   const cubeOn = impactAngularMomentumDrift({ rotated: true, iterations: 10, size: CUBE });
   const cubeOff = impactAngularMomentumDrift({ rotated: false, iterations: 10, size: CUBE });
   check(

@@ -171,47 +171,24 @@ export class Solver {
     this.rotatedInertia = true;
 
     /**
-     * Apply the paper's treatment of finite-stiffness forces to springs: the
-     * Equation 17 geometric stiffness term, and — where it belongs — the
-     * Equation 16 stiffness ramp. The authors' 3D demo does neither. Set false
-     * to reproduce that demo bit-for-bit.
-     *
-     * This is a bundle switch over the two sub-flags below. Read those for what
-     * the shipped configuration actually does, which is NOT "both on": the ramp
-     * is off by default because it is measurably wrong for springs.
+     * Bundle switch for the paper's spring treatment; the two sub-flags below
+     * are what actually apply. Set false to reproduce the 3D demo bit-for-bit.
      */
     this.paperExactSprings = true;
 
     /**
-     * Equation 16's stiffness ramp, applied to springs. DEFAULT OFF, and this
-     * is a physics decision rather than a performance one.
-     *
-     * Equation 16 ramps a PENALTY stiffness: the augmented Lagrangian raises k
-     * until a constraint that is supposed to hold exactly does hold. A spring's
-     * stiffness is not a penalty parameter, it is the material law — the answer,
-     * not a knob for reaching the answer. Ramping it means the spring solves
-     * with k⁽ⁿ⁾ < k* until the ramp catches up, so within the iteration budget
-     * the spring is simply softer than the material it represents.
-     *
-     * `test/fixtures.mjs` (`spring_ladder`) measures this against a closed-form
-     * equilibrium: a chain built at its exact analytic rest state, which a
-     * correct solver leaves alone. With the ramp on, a 1e6 N/m spring solves as
-     * roughly 7.5e4 N/m and the chain sags away from an equilibrium it was
-     * handed for free; with it off the fixture's oracle error is exactly zero.
-     * `node test/gym.mjs --scene=spring_ladder` reproduces both.
-     *
-     * Hard constraints still ramp — see joint.js and the contact path, where the
-     * stiffness genuinely is a penalty parameter and Equation 16 is right.
+     * Equation 16's stiffness ramp, applied to springs. OFF: Equation 16 ramps a
+     * penalty stiffness, and a spring's stiffness is the material law, not a
+     * knob for reaching it. Ramped, a 1e6 N/m spring solves as roughly 7.5e4 N/m
+     * — `test/fixtures.mjs` (`spring_ladder`) reads 1.91e-3 against a
+     * closed-form equilibrium with the ramp on and exactly 0 with it off.
+     * Hard constraints still ramp, where the stiffness is a penalty parameter.
      */
     this.springStiffnessRamp = false;
 
     /**
-     * Equation 17's geometric stiffness term for springs. Follows
-     * `paperExactSprings`, so ON by default. The 3D demo omits it; the same
-     * fixture shows it is exactly neutral at equilibrium and it improves the
-     * local model away from it, so there is no reason not to.
-     *
-     * Null means "follow `paperExactSprings`".
+     * Equation 17's geometric stiffness term for springs, which the 3D demo
+     * omits. Null follows `paperExactSprings`, so ON.
      */
     this.springGeometricStiffness = null;
 
@@ -223,24 +200,13 @@ export class Solver {
      * orientation on every evaluation, and so did this port.
      *
      * The difference is the term the same Taylor expansion already discards, so
-     * caching is the self-consistent choice. What it is NOT, on measurement, is
-     * clearly better or clearly cheaper:
-     *
-     *   accuracy  a wash, and scene-dependent. Over 240 steps at the shipped
-     *             ten iterations, worst constraint residual is 2.4x better
-     *             cached on `tumble` and 1.5x worse on `pyramid`, with three
-     *             parity scenes exactly tied. Mean residuals differ by a few
-     *             percent either way.
-     *   cost      no measurable win on the CPU path — 2.27 vs 2.21 ms/step on
-     *             `pyramid`, i.e. slightly slower. The saving the caching buys
-     *             is small against the rest of the step, and the cache's own
-     *             memory traffic eats it. The GPU path is where it is meant to
-     *             pay, by keeping per-iteration work off the critical path.
-     *
-     * What the measurement does support: from a shared state the two policies
-     * differ by ~2e-7 in a single step and that difference shrinks faster than
-     * dt, so the O(1) trajectory divergence parity reports on chaotic scenes is
-     * amplification, not a modelling disagreement of that size.
+     * caching is self-consistent. It is not, on measurement, better or cheaper:
+     * accuracy is scene-dependent (worst constraint residual 2.4x better cached
+     * on `tumble`, 1.5x worse on `pyramid`, three parity scenes tied), and the
+     * CPU path shows no win at 2.27 vs 2.21 ms/step on `pyramid`. The GPU path
+     * is where it is meant to pay. From a shared state the two differ by ~2e-7
+     * in one step, so parity's O(1) divergence on chaotic scenes is
+     * amplification rather than a disagreement of that size.
      *
      * Set false to reproduce the 3D demo.
      */
