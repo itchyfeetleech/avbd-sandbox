@@ -8,13 +8,23 @@
  * matches — a single transposed index or a missing term shows up within a step
  * or two.
  *
- * The reference solver is compiled by build_reference.sh. For this comparison
- * the JavaScript engine is configured to reproduce the reference's two
- * documented simplifications (see below); the sandbox itself runs with the
- * paper-exact behaviour instead.
+ * The reference solver is compiled by build_reference.sh.
+ *
+ * Two configurations are meaningful, and the default runs both:
+ *
+ *   shipped  what the sandbox runs. Three of its behaviours follow the paper
+ *            where the authors' 3D demo does something simpler, so exact
+ *            agreement is not expected where those are live. What is asserted
+ *            there is stability, not closeness; see BOUND.
+ *   demo     those three reverted, isolating the solver. Agrees bit-for-bit.
+ *
+ * A scene where no paper feature is live must agree bit-for-bit in BOTH. Which
+ * features are live per scene is measured, not declared; see liveFeatures.
  *
  * Usage:
  *   node test/parity/run_parity.mjs [--steps N] [--tol T] [--scene NAME] [-v]
+ *                                   [--config shipped|demo|both]
+ *                                   [--attribute] [--bound N]
  */
 
 import { execFileSync } from 'node:child_process';
@@ -39,17 +49,46 @@ const STEPS = Number(getArg('--steps', 180));
 const TOL = Number(getArg('--tol', 1e-9));
 const ONLY = getArg('--scene', null);
 const VERBOSE = argv.includes('-v') || argv.includes('--verbose');
+const CONFIG = getArg('--config', 'both');
+const ATTRIBUTE = argv.includes('--attribute');
 
-// Solver parameters, passed identically to both sides.
+/**
+ * Where a paper feature is live the shipped configuration is not held to a
+ * closeness bound: the two programs solve different equations there, and these
+ * scenes are chaotic enough that a picometre changes where the pile lands (see
+ * test/gym.mjs). A trajectory difference of order 1 after 180 steps says nothing
+ * about the size of the modelling difference, so only stability is asserted and
+ * the divergence is reported. Which side is right is settled by the oracles in
+ * test/analytic.mjs and test/fixtures.mjs.
+ */
+const BOUND = Number(getArg('--bound', 1e4));
+
+if (!['shipped', 'demo', 'both'].includes(CONFIG)) {
+  console.error(`--config must be shipped, demo or both (got "${CONFIG}")`);
+  process.exit(2);
+}
+
+// Solver parameters, passed identically to both sides. α is the sandbox's
+// shipped value, so the shipped run differs from the reference only in the
+// paper features below and not in a tuning constant.
 const PARAMS = {
   iterations: 10,
   dt: 1 / 60,
   gravity: -10,
-  alpha: 0.99,
+  alpha: 0.95,
   betaLin: 10000,
   betaAng: 100,
   gamma: 0.999,
 };
+
+/**
+ * The three behaviours where this implementation follows the paper and the
+ * authors' 3D demo does something simpler. See solver.js for what each changes.
+ */
+const PAPER_FEATURES = ['rotatedInertia', 'paperExactSprings', 'cachedContactJacobians'];
+
+/** Revert all three to the demo's behaviour. */
+const DEMO_CONFIG = Object.fromEntries(PAPER_FEATURES.map((f) => [f, false]));
 
 // ---------------------------------------------------------------------------
 
@@ -99,24 +138,22 @@ function runReference(scenePath) {
   return frames;
 }
 
-/** Run the JavaScript engine and collect the same trajectory. */
-function runJs(scenePath) {
+/**
+ * Run the JavaScript engine and collect the same trajectory.
+ *
+ * `overrides` selects the configuration: none runs the shipped defaults,
+ * DEMO_CONFIG reverts the three paper features.
+ *
+ * Post-stabilization is pinned off. That is not one of the features being
+ * reverted — off is also the shipped default, and the 3D reference implements
+ * only the Equation 18 alpha mode.
+ */
+function runJs(scenePath, overrides = {}) {
   const solver = new Solver();
   solver.defaultParams();
   Object.assign(solver, PARAMS);
-
-  // Match the reference's two documented simplifications so that this test
-  // isolates the solver itself. Both default to the paper-exact behaviour in
-  // the sandbox; see solver.js for what each one changes. Post-stabilization
-  // is pinned off as well: the 3D reference implements only the Equation 18
-  // alpha mode (the 2D reference is where post-stabilization comes from).
-  solver.rotatedInertia = false;
-  solver.paperExactSprings = false;
   solver.postStabilize = false;
-  // The 3D reference rebuilds the contact Jacobian from the current iterate
-  // on every evaluation rather than caching it at x_t (Sec. 4); match that
-  // here so this stays a diff of the solver and nothing else.
-  solver.cachedContactJacobians = false;
+  Object.assign(solver, overrides);
 
   // The reference uses a naive O(n^2) sweep. The spatial hash is designed to
   // enumerate pairs in the identical order, and `--broadphase hash` below
@@ -144,77 +181,208 @@ function runJs(scenePath) {
 
 const LABELS = ['px', 'py', 'pz', 'qx', 'qy', 'qz', 'qw', 'vx', 'vy', 'vz', 'wx', 'wy', 'wz'];
 
-let failures = 0;
-const summary = [];
-
-for (const name of selected) {
-  const scenePath = join(SCENE_DIR, `${name}.scene`);
-
-  const ref = runReference(scenePath);
-  const js = runJs(scenePath);
-
+/** Worst relative error between two trajectories, with an absolute floor. */
+function compare(a, b, tol) {
   let worst = 0;
   let worstAt = null;
   let firstBreach = null;
+  let mismatch = null;
 
   for (let step = 1; step <= STEPS; step++) {
-    const a = ref[step];
-    const b = js[step];
-    if (!a || !b || a.length !== b.length) {
-      console.error(`${name}: body count mismatch at step ${step}`);
-      failures++;
+    const x = a[step];
+    const y = b[step];
+    if (!x || !y || x.length !== y.length) {
+      mismatch = step;
       break;
     }
 
-    for (let i = 0; i < a.length; i++) {
+    for (let i = 0; i < x.length; i++) {
       for (let c = 0; c < LABELS.length; c++) {
-        // Relative error, with an absolute floor so values near zero do not
-        // dominate the comparison.
-        const d = Math.abs(a[i][c] - b[i][c]);
-        const scale = Math.max(1, Math.abs(a[i][c]), Math.abs(b[i][c]));
+        const d = Math.abs(x[i][c] - y[i][c]);
+        const scale = Math.max(1, Math.abs(x[i][c]), Math.abs(y[i][c]));
         const err = d / scale;
 
         if (err > worst) {
           worst = err;
-          worstAt = { step, body: i, field: LABELS[c], ref: a[i][c], js: b[i][c] };
+          worstAt = { step, body: i, field: LABELS[c], ref: x[i][c], js: y[i][c] };
         }
-        if (err > TOL && firstBreach === null) {
-          firstBreach = { step, body: i, field: LABELS[c], ref: a[i][c], js: b[i][c], err };
+        if (err > tol && firstBreach === null) {
+          firstBreach = { step, body: i, field: LABELS[c], ref: x[i][c], js: y[i][c], err };
         }
       }
     }
   }
 
-  const pass = worst <= TOL;
-  if (!pass) failures++;
+  return { worst, worstAt, firstBreach, mismatch };
+}
 
-  summary.push({ name, worst, pass, bodies: ref[1] ? ref[1].length : 0 });
+/**
+ * Which paper features change this scene's trajectory. Measured rather than read
+ * off the scene: a feature is live iff enabling it alone moves a body, so this
+ * cannot drift out of date the way a hand-kept table would.
+ */
+function liveFeatures(scenePath, demoTrajectory) {
+  const live = [];
+  for (const feature of PAPER_FEATURES) {
+    const withFeature = runJs(scenePath, { ...DEMO_CONFIG, [feature]: true });
+    const { worst } = compare(demoTrajectory, withFeature, Infinity);
+    if (worst > 0) live.push({ feature, effect: worst });
+  }
+  return live;
+}
 
+/** Every value finite, and every body still inside a sane region of space. */
+function finiteAndBounded(frames) {
+  for (let step = 1; step <= STEPS; step++) {
+    const frame = frames[step];
+    if (!frame) return false;
+    for (const body of frame) {
+      for (const v of body) {
+        if (!Number.isFinite(v) || Math.abs(v) > BOUND) return false;
+      }
+    }
+  }
+  return true;
+}
+
+let failures = 0;
+const rows = [];
+
+for (const name of selected) {
+  const scenePath = join(SCENE_DIR, `${name}.scene`);
+
+  // The reference run is the expensive half and is identical for every
+  // configuration, so it happens once.
+  const ref = runReference(scenePath);
+  const demo = runJs(scenePath, DEMO_CONFIG);
+  const shipped = runJs(scenePath);
+
+  const live = liveFeatures(scenePath, demo);
+  const row = { name, bodies: ref[1] ? ref[1].length : 0, live };
+
+  if (CONFIG === 'demo' || CONFIG === 'both') {
+    const r = compare(ref, demo, TOL);
+    row.demo = r;
+    row.demoPass = r.mismatch === null && r.worst <= TOL;
+    if (!row.demoPass) failures++;
+  }
+
+  if (CONFIG === 'shipped' || CONFIG === 'both') {
+    const r = compare(ref, shipped, TOL);
+    row.shipped = r;
+    row.shippedExact = r.mismatch === null && r.worst <= TOL;
+    if (live.length === 0) {
+      // No paper feature is live, so both programs are solving the same
+      // equations here and nothing less than bit-for-bit will do. This is the
+      // part of the shipped configuration the reference can adjudicate.
+      row.shippedPass = row.shippedExact;
+    } else {
+      // A paper feature is live. Assert stability only; see BOUND above.
+      row.shippedPass = r.mismatch === null && finiteAndBounded(shipped);
+    }
+    if (!row.shippedPass) failures++;
+  }
+
+  rows.push(row);
+}
+
+// --- Report -----------------------------------------------------------------
+
+const featureAbbrev = {
+  rotatedInertia: 'inertia',
+  paperExactSprings: 'springs',
+  cachedContactJacobians: 'jacobian',
+};
+
+function line(name, bodies, result, tol, pass, note) {
   const status = pass ? 'PASS' : 'FAIL';
   console.log(
-    `${status}  ${name.padEnd(18)} bodies=${String(summary[summary.length - 1].bodies).padStart(4)}` +
-      `  steps=${STEPS}  max rel err=${worst.toExponential(3)}`
+    `${status}  ${name.padEnd(18)} bodies=${String(bodies).padStart(4)}` +
+      `  steps=${STEPS}  max rel err=${result.worst.toExponential(3)}` +
+      `  tol=${tol.toExponential(0)}${note ? `  ${note}` : ''}`
   );
-
-  if (!pass && firstBreach) {
+  if (result.mismatch !== null) {
+    console.log(`      body count mismatch at step ${result.mismatch}`);
+  }
+  if (!pass && result.firstBreach) {
+    const b = result.firstBreach;
     console.log(
-      `      first breach: step ${firstBreach.step} body ${firstBreach.body} ` +
-        `${firstBreach.field}  ref=${firstBreach.ref}  js=${firstBreach.js}  err=${firstBreach.err.toExponential(3)}`
+      `      first breach: step ${b.step} body ${b.body} ${b.field}  ` +
+        `ref=${b.ref}  js=${b.js}  err=${b.err.toExponential(3)}`
     );
   }
-  if (VERBOSE && worstAt) {
+  if (VERBOSE && result.worstAt) {
+    const w = result.worstAt;
     console.log(
-      `      worst: step ${worstAt.step} body ${worstAt.body} ${worstAt.field} ` +
-        `ref=${worstAt.ref} js=${worstAt.js}`
+      `      worst: step ${w.step} body ${w.body} ${w.field} ref=${w.ref} js=${w.js}`
     );
   }
 }
 
+if (CONFIG === 'demo' || CONFIG === 'both') {
+  console.log('');
+  console.log('Demo configuration — paper features reverted, solver isolated.');
+  console.log('Bit-for-bit agreement expected everywhere.');
+  console.log('');
+  for (const r of rows) line(r.name, r.bodies, r.demo, TOL, r.demoPass);
+}
+
+if (CONFIG === 'shipped' || CONFIG === 'both') {
+  console.log('');
+  console.log('Shipped configuration — what the sandbox runs.');
+  console.log(
+    'Scenes with no live paper feature must agree bit-for-bit. Where a feature ' +
+      'is live the\ntwo programs solve different equations, so only stability ' +
+      'is asserted and the\ndivergence is reported rather than graded.'
+  );
+  console.log('');
+  for (const r of rows) {
+    const note = r.live.length
+      ? `live: ${r.live.map((l) => featureAbbrev[l.feature]).join(',')} — stability only`
+      : 'no paper feature live — exact';
+    line(r.name, r.bodies, r.shipped, r.live.length ? BOUND : TOL, r.shippedPass, note);
+  }
+
+  const exact = rows.filter((r) => r.live.length === 0);
+  const exactPass = exact.filter((r) => r.shippedExact).length;
+  console.log('');
+  console.log(
+    `  ${exactPass}/${exact.length} scenes where no paper feature is live agree ` +
+      `bit-for-bit in the shipped configuration`
+  );
+  const diverging = rows.filter((r) => r.live.length > 0);
+  if (diverging.length) {
+    const worst = diverging.reduce((m, r) => Math.max(m, r.shipped.worst), 0);
+    console.log(
+      `  ${diverging.length} scenes have a live paper feature: divergence up to ` +
+        `${worst.toExponential(3)}, all stable`
+    );
+  }
+}
+
+if (ATTRIBUTE) {
+  console.log('');
+  console.log('Per-feature attribution — effect of enabling each feature alone,');
+  console.log('measured against the demo configuration (0 means inert here).');
+  console.log('');
+  const width = Math.max(...PAPER_FEATURES.map((f) => f.length));
+  for (const r of rows) {
+    const parts = PAPER_FEATURES.map((f) => {
+      const hit = r.live.find((l) => l.feature === f);
+      return `${featureAbbrev[f]}=${hit ? hit.effect.toExponential(1) : '0'}`;
+    });
+    console.log(`  ${r.name.padEnd(18)} ${parts.join('  ')}`);
+    void width;
+  }
+}
+
 console.log('');
-const overallWorst = summary.reduce((m, s) => Math.max(m, s.worst), 0);
+const label = CONFIG === 'both' ? 'checks' : `${CONFIG} checks`;
+const total =
+  rows.length * (CONFIG === 'both' ? 2 : 1);
 console.log(
-  `${summary.length - failures}/${summary.length} scenes within tolerance ` +
-    `${TOL.toExponential(0)} over ${STEPS} steps (worst overall ${overallWorst.toExponential(3)})`
+  `${total - failures}/${total} ${label} passed over ${STEPS} steps ` +
+    `across ${rows.length} scenes`
 );
 
 process.exit(failures > 0 ? 1 : 0);

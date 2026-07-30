@@ -45,13 +45,21 @@ const _m0 = mat3.create();
 /**
  * `paperExactSprings` bundles two features of the paper that are independent of
  * each other: the Equation 16 stiffness ramp of Section 3.4, and the Equation 17
- * geometric stiffness term. These two accessors let either be selected on its
- * own for measurement (`test/gym.mjs`). Both read through to `paperExactSprings`
- * unless explicitly overridden, so default behaviour — and therefore the parity
- * harness — is bit-for-bit unaffected.
+ * geometric stiffness term. These accessors resolve each one, so the two are
+ * selectable independently (`test/gym.mjs`) and the shipped configuration can
+ * take the geometric term without the ramp — which is what it does, because the
+ * ramp is wrong for a material stiffness. See solver.js for the measurement.
+ *
+ * Exported because the GPU backend packs these same two decisions into separate
+ * flag bits; both backends must resolve them from one place or they drift apart.
  */
-const rampEnabled = (solver) => solver.springStiffnessRamp ?? solver.paperExactSprings;
-const geometricEnabled = (solver) => solver.springGeometricStiffness ?? solver.paperExactSprings;
+export const springRampEnabled = (solver) =>
+  solver.springStiffnessRamp ?? solver.paperExactSprings;
+export const springGeometricEnabled = (solver) =>
+  solver.springGeometricStiffness ?? solver.paperExactSprings;
+
+const rampEnabled = springRampEnabled;
+const geometricEnabled = springGeometricEnabled;
 
 export class Spring extends Force {
   /**

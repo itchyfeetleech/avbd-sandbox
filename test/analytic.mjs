@@ -3,11 +3,13 @@
  *
  * `test/parity` proves this engine reproduces the authors' reference bit for
  * bit, which is strong evidence that every equation was transcribed correctly —
- * but it is evidence about an *implementation*, not about physics, and it runs
- * in a configuration the sandbox does not ship (parity pins `rotatedInertia`,
- * `paperExactSprings` and `cachedContactJacobians` off, and alpha to 0.99,
- * while the app defaults to the opposite of all four). Two implementations can
- * also agree bit for bit on the same mistake.
+ * but it is evidence about an *implementation*, not about physics, and two
+ * implementations can agree bit for bit on the same mistake.
+ *
+ * Parity also cannot judge the places where this implementation follows the
+ * paper and the demo does something simpler — no comparison against that demo
+ * can adjudicate behaviour it does not implement. Check 8 below is where the
+ * shipped behaviour gets decided instead.
  *
  * This file checks the simulation against results derived on paper: the exact
  * BDF1 free-fall trajectory, the Coulomb threshold, the cuboid inertia tensor,
@@ -22,7 +24,7 @@
 
 import { Solver } from '../src/physics/solver.js';
 import { Rigid } from '../src/physics/rigid.js';
-import { mat3 } from '../src/math/maths.js';
+import { mat3, quat } from '../src/math/maths.js';
 
 let failures = 0;
 
@@ -269,6 +271,128 @@ function angularMomentumDrift(rotated, size, w0, steps) {
   const off = angularMomentumDrift(false, [1, 1, 1], w0, 200);
   check('cube: rotated and body-frame inertia agree', Math.abs(on - off) < 1e-12,
     `${on.toExponential(2)} vs ${off.toExponential(2)}`);
+}
+
+// ---------------------------------------------------------------------------
+// 8. Rotated inertia, decided by a conservation law.
+//
+//    Equation 8's mass matrix uses "the rotated moment", R I Rᵀ; the demo uses
+//    the body-frame diagonal, equivalent for isotropic inertia and wrong
+//    otherwise. Parity cannot adjudicate that, since it only runs where the two
+//    agree by construction.
+//
+//    Contact impulses on a pair are equal and opposite at a shared point, so the
+//    continuous problem conserves total world angular momentum about a fixed
+//    origin exactly:
+//
+//        L = Σ_i [ r_i × m_i v_i  +  R_i I_i R_iᵀ ω_i ]
+//
+//    L uses the rotated tensor in BOTH runs — that is the definition of angular
+//    momentum regardless of what the solver's mass matrix uses. Bodies start with
+//    ω = 0 so the missing gyroscopic term (check 7) cannot pollute the result: it
+//    only acts on an already-rotating body, and this measures the impulse step.
+//
+//    The gap does not close with more iterations, which is what separates a
+//    modelling error from a convergence residual.
+// ---------------------------------------------------------------------------
+function impactAngularMomentumDrift({ rotated, iterations, size }) {
+  const s = new Solver();
+  s.gravity = 0;
+  s.iterations = iterations;
+  s.rotatedInertia = rotated;
+
+  const a = new Rigid(s, size, 1, 0, [-2.2, 0.7, 0], [3, 0, 0]);
+  const b = new Rigid(s, size, 1, 0, [2.2, -0.7, 0], [-3, 0, 0]);
+
+  // Rotate both off the world axes: irrelevant for an isotropic body, and
+  // exactly what the body-frame tensor gets wrong otherwise.
+  // quat.fromAxisAngle does not normalise, so pass unit axes.
+  const unit = (x, y, z) => {
+    const n = Math.hypot(x, y, z);
+    return [x / n, y / n, z / n];
+  };
+  const [x1, y1, z1] = unit(0.3, 0.5, 0.81);
+  const [x2, y2, z2] = unit(0.7, -0.2, 0.68);
+  quat.fromAxisAngle(a.positionAng, x1, y1, z1, 0.9);
+  quat.fromAxisAngle(b.positionAng, x2, y2, z2, -1.2);
+  quat.copy(a.initialAng, a.positionAng);
+  quat.copy(b.initialAng, b.positionAng);
+
+  const R = mat3.create();
+  const I = mat3.create();
+  const T = mat3.create();
+  const M = mat3.create();
+  const spin = new Float64Array(3);
+
+  const totalL = () => {
+    const L = [0, 0, 0];
+    for (const body of [a, b]) {
+      mat3.fromQuat(R, body.positionAng);
+      mat3.transpose(R, R); // body-to-world, matching rigid.js
+      mat3.diagonal(I, body.moment[0], body.moment[1], body.moment[2]);
+      mat3.mul(T, R, I);
+      mat3.transpose(R, R);
+      mat3.mul(M, T, R);
+      mat3.mulVec(spin, M, body.velocityAng);
+
+      const [rx, ry, rz] = body.positionLin;
+      const [vx, vy, vz] = body.velocityLin;
+      const m = body.mass;
+      L[0] += spin[0] + m * (ry * vz - rz * vy);
+      L[1] += spin[1] + m * (rz * vx - rx * vz);
+      L[2] += spin[2] + m * (rx * vy - ry * vx);
+    }
+    return L;
+  };
+
+  let worst = 0;
+  let contacted = false;
+  for (let i = 0; i < 120; i++) {
+    const before = totalL();
+    const scale = Math.hypot(...before) || 1;
+    s.step();
+    const after = totalL();
+    if (s.stats.contacts > 0) {
+      contacted = true;
+      worst = Math.max(
+        worst,
+        Math.hypot(after[0] - before[0], after[1] - before[1], after[2] - before[2]) / scale
+      );
+    }
+  }
+  if (!contacted) throw new Error('impact oracle never made contact — fixture is broken');
+  return worst;
+}
+{
+  const BOX = [1, 2, 4];
+  const CUBE = [1, 1, 1];
+
+  const rotated10 = impactAngularMomentumDrift({ rotated: true, iterations: 10, size: BOX });
+  const bodyFrame10 = impactAngularMomentumDrift({ rotated: false, iterations: 10, size: BOX });
+  check(
+    'anisotropic impact: rotated inertia conserves L far better',
+    bodyFrame10 / rotated10 > 10,
+    `rotated ${(rotated10 * 100).toFixed(2)}% vs body-frame ${(bodyFrame10 * 100).toFixed(2)}%` +
+      ` (${(bodyFrame10 / rotated10).toFixed(0)}x)`
+  );
+
+  // 24x the iterations does not rescue the body-frame tensor.
+  const bodyFrame240 = impactAngularMomentumDrift({ rotated: false, iterations: 240, size: BOX });
+  check(
+    'body-frame inertia error is a modelling error, not a residual',
+    bodyFrame240 / bodyFrame10 > 0.5,
+    `10 iters ${(bodyFrame10 * 100).toFixed(2)}%, 240 iters ${(bodyFrame240 * 100).toFixed(2)}%`
+  );
+
+  // Control: isotropic inertia makes the two forms algebraically identical, so
+  // any difference would mean the rotated path is not R I Rᵀ.
+  const cubeOn = impactAngularMomentumDrift({ rotated: true, iterations: 10, size: CUBE });
+  const cubeOff = impactAngularMomentumDrift({ rotated: false, iterations: 10, size: CUBE });
+  check(
+    'isotropic impact: the two inertia forms agree exactly',
+    Math.abs(cubeOn - cubeOff) < 1e-15,
+    `${cubeOn.toExponential(2)} vs ${cubeOff.toExponential(2)}`
+  );
 }
 
 // ---------------------------------------------------------------------------

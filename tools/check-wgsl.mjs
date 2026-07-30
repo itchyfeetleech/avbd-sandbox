@@ -102,11 +102,44 @@ for (const m of SHADER_SOURCE.matchAll(/\bGU\.(\w+)/g)) {
   }
 }
 
+// Flag bits must be distinct powers of two. Splitting one behaviour into two
+// bits is where a collision slips in, and it would silently make the GPU ignore
+// a setting the CPU honours.
+const flagBits = Object.entries(layout).filter(([n]) => n.startsWith('FLAG_'));
+const seenBits = new Map();
+for (const [name, value] of flagBits) {
+  if (!Number.isInteger(value) || value <= 0 || (value & (value - 1)) !== 0) {
+    console.log(`  ${name} = ${value} is not a positive power of two`);
+    findings++;
+  }
+  if (seenBits.has(value)) {
+    console.log(`  ${name} collides with ${seenBits.get(value)} (both ${value})`);
+    findings++;
+  }
+  seenBits.set(value, name);
+}
+// The shader declares some flags under shorter names (FLAG_POST_STAB for
+// FLAG_POST_STABILIZE), so match by value, not name: each value it declares must
+// be a bit the host exports. Catches a hardcoded number drifting from layout.js.
+const hostValues = new Set(flagBits.map(([, v]) => v));
+let declaredFlags = 0;
+for (const m of SHADER_SOURCE.matchAll(/const\s+(FLAG_\w+)\s*=\s*(\d+)u\s*;/g)) {
+  declaredFlags++;
+  if (!hostValues.has(Number(m[2]))) {
+    console.log(
+      `  shader declares ${m[1]} = ${m[2]}, which is not any host FLAG_ bit ` +
+        `(${[...hostValues].sort((a, b) => a - b).join(', ')})`
+    );
+    findings++;
+  }
+}
+
 if (findings) {
   console.log(`\n${findings} problem(s) found.`);
   process.exit(1);
 }
 console.log(
   'WGSL: no reserved keywords used as identifiers; ' +
-    `${entryPoints.size} entry points and ${declared.size} uniforms agree with the host.`
+    `${entryPoints.size} entry points and ${declared.size} uniforms agree with the host; ` +
+    `${flagBits.length} flag bits distinct, ${declaredFlags} declared in the shader.`
 );

@@ -48,13 +48,16 @@ const GRAVITY = -10.0;
  * handed for free, which is a far sharper signal than watching a chain settle
  * from some arbitrary start and arguing about where it should have stopped.
  *
- * The flag under test is `paperExactSprings`. With it off, the material
- * stiffness k* is applied directly and the equilibrium above is exactly the
- * fixed point. With it on, the Equation 16 ramp means the spring solves with a
- * penalty stiffness k⁽ⁿ⁾ that starts at `penaltyMin` and climbs by β|C| per
- * iteration. If that ramp does not reach k* the spring is effectively softer
- * than its material stiffness, and the chain hangs measurably lower than it
- * should. That is precisely what this fixture measures.
+ * The flag under test is `springStiffnessRamp`. With it off — the shipped
+ * configuration — the material stiffness k* is applied directly and the
+ * equilibrium above is exactly the fixed point. With it on, the Equation 16 ramp
+ * means the spring solves with a penalty stiffness k⁽ⁿ⁾ that starts at
+ * `penaltyMin` and climbs by β|C| per iteration. If that ramp does not reach k*
+ * the spring is effectively softer than its material stiffness, and the chain
+ * hangs measurably lower than it should.
+ *
+ * This fixture is why the ramp was withdrawn: 1.91e-3 with it on, exactly zero
+ * with it off. `node test/gym.mjs --scene=spring_ladder` shows both.
  */
 const SPRING_LADDER = {
   id: 'spring_ladder',

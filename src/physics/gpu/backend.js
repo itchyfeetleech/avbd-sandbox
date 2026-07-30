@@ -26,7 +26,8 @@ import {
   CSR_KIND_JOINT, CSR_KIND_SPRING,
   CTR_PAIRS, CTR_SLOTS, CTR_ADJ, CTR_OVERFLOW, CTR_CONTACTS,
   STAT_MAX_PEN, STAT_MAX_LAMBDA, STAT_MAX_PENALTY, CTR_COUNT,
-  FLAG_POST_STABILIZE, FLAG_ROT_INERTIA, FLAG_PAPER_SPRINGS, FLAG_COLOR_OVERRIDE,
+  FLAG_POST_STABILIZE, FLAG_ROT_INERTIA, FLAG_SPRING_RAMP, FLAG_SPRING_GEOMETRIC,
+  FLAG_COLOR_OVERRIDE,
   FLAG_CACHED_JAC,
   BFLAG_DYNAMIC, BFLAG_LARGE, BFLAG_SPHERE,
   BS_MASS, BS_MOMENT, BS_SIZE, BS_STATIC_FRICTION, BS_DYNAMIC_FRICTION,
@@ -36,7 +37,7 @@ import {
 } from './layout.js';
 import { SHADER_SOURCE } from './shaders.js';
 import { Joint } from '../joint.js';
-import { Spring } from '../spring.js';
+import { Spring, springRampEnabled, springGeometricEnabled } from '../spring.js';
 import { Manifold } from '../manifold.js';
 
 export const KERNELS = [
@@ -1279,7 +1280,8 @@ export class GpuBackend {
       flags:
         (solver.postStabilize ? FLAG_POST_STABILIZE : 0) |
         (solver.rotatedInertia ? FLAG_ROT_INERTIA : 0) |
-        (solver.paperExactSprings ? FLAG_PAPER_SPRINGS : 0) |
+        (springRampEnabled(solver) ? FLAG_SPRING_RAMP : 0) |
+        (springGeometricEnabled(solver) ? FLAG_SPRING_GEOMETRIC : 0) |
         (this.overrideColoring ? FLAG_COLOR_OVERRIDE : 0) |
         (solver.cachedContactJacobians ? FLAG_CACHED_JAC : 0),
       gridMask: this.caps.gridSize - 1, hashMask: this.caps.hashSize - 1,

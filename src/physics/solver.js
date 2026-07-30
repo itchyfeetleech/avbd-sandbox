@@ -171,29 +171,25 @@ export class Solver {
     this.rotatedInertia = true;
 
     /**
-     * Apply the paper's treatment of finite-stiffness forces to springs:
-     * the Equation 16 stiffness ramp (Section 3.4) and the Equation 17
-     * geometric stiffness term. The authors' 3D demo does neither. Set false to
-     * reproduce that demo bit-for-bit.
+     * Bundle switch for the paper's spring treatment; the two sub-flags below
+     * are what actually apply. Set false to reproduce the 3D demo bit-for-bit.
      */
     this.paperExactSprings = true;
 
     /**
-     * The two features `paperExactSprings` bundles, separable for measurement.
-     * Null means "follow `paperExactSprings`", which is the shipped behaviour;
-     * set either to a boolean to select it independently. They are independent
-     * in the paper — Equation 16 ramps the penalty stiffness, Equation 17 adds
-     * the geometric stiffness term — and `test/gym.mjs` shows they behave very
-     * differently on a spring whose stiffness is material rather than a penalty
-     * parameter. See `test/fixtures.mjs` (`spring_ladder`).
-     *
-     * CPU ONLY. The GPU backend packs a single FLAG_PAPER_SPRINGS bit derived
-     * from `paperExactSprings`, so overriding either of these makes the two
-     * backends disagree. They exist for measurement; adopting a split as the
-     * shipped default would need the same split in the WGSL spring kernels
-     * first, verified with `node tools/gputest.mjs`.
+     * Equation 16's stiffness ramp, applied to springs. OFF: Equation 16 ramps a
+     * penalty stiffness, and a spring's stiffness is the material law, not a
+     * knob for reaching it. Ramped, a 1e6 N/m spring solves as roughly 7.5e4 N/m
+     * — `test/fixtures.mjs` (`spring_ladder`) reads 1.91e-3 against a
+     * closed-form equilibrium with the ramp on and exactly 0 with it off.
+     * Hard constraints still ramp, where the stiffness is a penalty parameter.
      */
-    this.springStiffnessRamp = null;
+    this.springStiffnessRamp = false;
+
+    /**
+     * Equation 17's geometric stiffness term for springs, which the 3D demo
+     * omits. Null follows `paperExactSprings`, so ON.
+     */
     this.springGeometricStiffness = null;
 
     /**
@@ -203,9 +199,16 @@ export class Solver {
      * does this; their 3D demo rebuilds the Jacobian from the current
      * orientation on every evaluation, and so did this port.
      *
-     * The difference is second order in the step, which is exactly the term the
-     * same Taylor expansion already discards — so caching is the self-consistent
-     * choice as well as the cheaper one. Set false to reproduce the 3D demo.
+     * The difference is the term the same Taylor expansion already discards, so
+     * caching is self-consistent. It is not, on measurement, better or cheaper:
+     * accuracy is scene-dependent (worst constraint residual 2.4x better cached
+     * on `tumble`, 1.5x worse on `pyramid`, three parity scenes tied), and the
+     * CPU path shows no win at 2.27 vs 2.21 ms/step on `pyramid`. The GPU path
+     * is where it is meant to pay. From a shared state the two differ by ~2e-7
+     * in one step, so parity's O(1) divergence on chaotic scenes is
+     * amplification rather than a disagreement of that size.
+     *
+     * Set false to reproduce the 3D demo.
      */
     this.cachedContactJacobians = true;
 
