@@ -131,6 +131,9 @@
     cursor: grab;
   }
 
+  /* The canvas fills the viewport, so the default outset ring is off-screen. */
+  #view:focus-visible { outline-offset: -3px; }
+
   body[data-tool="drop"] #view,
   body[data-tool="blast"] #view { cursor: crosshair; }
   body[data-tool="erase"] #view { cursor: not-allowed; }
@@ -538,6 +541,26 @@
     gap: 5px;
     padding: 6px;
     transform: translateX(-50%);
+    transition: left 180ms ease;
+  }
+
+  /* Below 1080 px an open sidebar covers the centred dock, so centre it in the
+     space beside the sidebar instead. The full dock fits there from 742 px;
+     below that the tools shrink. The narrow layout takes over at 680 px. */
+  @media (min-width: 681px) and (max-width: 1079px) {
+    body:not(.collapsed) #toolDock {
+      --sidebar-right: calc(max(14px, env(safe-area-inset-left)) + 352px);
+      left: calc((100vw + var(--sidebar-right)) / 2);
+      max-width: calc(100vw - var(--sidebar-right) - 28px);
+    }
+  }
+
+  @media (min-width: 681px) and (max-width: 741px) {
+    body:not(.collapsed) .tool {
+      min-width: 0;
+      flex: 0 1 auto;
+      padding-inline: 6px;
+    }
   }
 
   .tool {
@@ -554,7 +577,7 @@
   .tool .key {
     display: block;
     margin-top: 1px;
-    color: #6f7c89;
+    color: var(--dim);
     font: 9px/1 var(--mono);
   }
 
@@ -605,6 +628,9 @@
     text-align: center;
   }
 
+  /* Emptied rather than hidden: a live region must stay in the accessibility
+     tree for screen readers to announce what is written into it next. */
+  #notice:empty { opacity: 0; pointer-events: none; }
   #notice[data-tone="good"] { border-color: rgba(115, 216, 154, 0.55); }
   #notice[data-tone="warn"] { border-color: rgba(255, 191, 105, 0.6); }
   #notice[data-tone="bad"] { border-color: rgba(255, 122, 114, 0.65); }
@@ -661,6 +687,7 @@
   #error h3 { margin: 0 0 8px; color: var(--bad); font-size: 16px; }
   #error p { margin: 0 0 14px; color: var(--muted); font-size: 12.5px; }
   #error code { color: var(--text); font: 11px/1.45 var(--mono); }
+  #errorFallback { margin-left: 8px; }
 
   #scrim {
     position: fixed;
@@ -743,7 +770,7 @@
 </canvas>
 
 <div id="bootStatus" role="status" aria-live="polite">Preparing the playground…</div>
-<div id="notice" role="status" aria-live="polite" hidden></div>
+<div id="notice" role="status" aria-live="polite"></div>
 <div id="scrim" hidden></div>
 
 <button
@@ -758,6 +785,8 @@
   tabindex="-1"
 >☰</button>
 
+<!-- Every control is autocomplete="off": Firefox otherwise restores values on
+     reload while the engine boots from its defaults, and the two disagree. -->
 <aside id="sidebar" class="panel" aria-label="Sandbox controls" aria-hidden="false">
   <header class="brand">
     <div class="brand-mark" aria-hidden="true">AV</div>
@@ -809,7 +838,7 @@
         </div>
         <div class="field">
           <label for="scene">Scene</label>
-          <select id="scene" aria-describedby="blurb"></select>
+          <select autocomplete="off" id="scene" aria-describedby="blurb"></select>
           <p class="scene-blurb" id="blurb"></p>
         </div>
 
@@ -824,7 +853,7 @@
         <div class="section-heading"><h2>Playback</h2></div>
         <div class="field compact">
           <label for="timeScale">Speed</label>
-          <select id="timeScale">
+          <select autocomplete="off" id="timeScale">
             <option value="0.25">Slow · 0.25×</option>
             <option value="0.5">Half · 0.5×</option>
             <option value="1" selected>Real time · 1×</option>
@@ -840,23 +869,23 @@
         <summary>View options</summary>
         <div class="details-body">
           <label class="check">
-            <input type="checkbox" id="showJoints" checked>
+            <input autocomplete="off" type="checkbox" id="showJoints" checked>
             <span>Joints, ropes, and springs</span>
           </label>
           <label class="check">
-            <input type="checkbox" id="showGround" checked>
+            <input autocomplete="off" type="checkbox" id="showGround" checked>
             <span>Ground grid <small class="support">Visual only; the floor collider remains.</small></span>
           </label>
           <label class="check">
-            <input type="checkbox" id="showShadows" checked>
+            <input autocomplete="off" type="checkbox" id="showShadows" checked>
             <span>Shadows</span>
           </label>
           <label class="check">
-            <input type="checkbox" id="showContacts">
+            <input autocomplete="off" type="checkbox" id="showContacts">
             <span>Contact markers <small id="contactSupport" class="support">Available on the CPU reference.</small></span>
           </label>
           <label class="check">
-            <input type="checkbox" id="showKillbox">
+            <input autocomplete="off" type="checkbox" id="showKillbox">
             <span>World safety bounds</span>
           </label>
         </div>
@@ -876,12 +905,12 @@
 
         <div class="field">
           <label for="spawnPattern">Arrangement</label>
-          <select id="spawnPattern"></select>
+          <select autocomplete="off" id="spawnPattern"></select>
         </div>
 
         <div class="field" id="spawnShapeField">
           <label for="spawnShape">Object</label>
-          <select id="spawnShape">
+          <select autocomplete="off" id="spawnShape">
             <option value="cube">Cubes</option>
             <option value="sphere">Spheres</option>
             <option value="plank">Planks</option>
@@ -897,20 +926,20 @@
         <div id="spawnFabricOptions" hidden>
           <div class="field">
             <label for="spawnFabricPins">Cloth anchoring</label>
-            <select id="spawnFabricPins">
+            <select autocomplete="off" id="spawnFabricPins">
               <option value="2" selected>Hang from two corners</option>
               <option value="0">Free cloth</option>
             </select>
           </div>
           <label class="check">
-            <input type="checkbox" id="spawnFabricTearing" checked>
+            <input autocomplete="off" type="checkbox" id="spawnFabricTearing" checked>
             <span>Allow new cloth to tear</span>
           </label>
           <div class="field" id="spawnFabricTearField">
             <label for="spawnFabricTear">
               Tear stretch <span class="val" id="spawnFabricTearV">75%</span>
             </label>
-            <input
+            <input autocomplete="off"
               type="range"
               id="spawnFabricTear"
               min="0.1"
@@ -926,7 +955,7 @@
         <div class="build-action">
           <div class="field compact">
             <label for="spawnCount">Amount</label>
-            <select id="spawnCount">
+            <select autocomplete="off" id="spawnCount">
               <option value="1">1</option>
               <option value="10">10</option>
               <option value="50">50</option>
@@ -947,7 +976,7 @@
         </div>
 
         <label class="check">
-          <input type="checkbox" id="spawnAtCursor">
+          <input autocomplete="off" type="checkbox" id="spawnAtCursor">
           <span>Build around the camera focus</span>
         </label>
       </section>
@@ -956,7 +985,7 @@
         <div class="section-heading"><h2>Feel</h2></div>
         <div class="field">
           <label for="materialPreset">Material</label>
-          <select id="materialPreset">
+          <select autocomplete="off" id="materialPreset">
             <option value="balanced" selected>Balanced</option>
             <option value="rubber">Rubber · grippy and bouncy</option>
             <option value="heavy">Heavy · dense and steady</option>
@@ -967,11 +996,11 @@
         </div>
         <div class="field">
           <label for="spawnSize">Size <span class="val" id="spawnSizeV">0.90</span></label>
-          <input type="range" id="spawnSize" min="0.2" max="3" step="0.05" value="0.9">
+          <input autocomplete="off" type="range" id="spawnSize" min="0.2" max="3" step="0.05" value="0.9">
         </div>
         <div class="field" id="spawnHeightField">
           <label for="spawnHeight">Drop height <span class="val" id="spawnHeightV">20</span></label>
-          <input type="range" id="spawnHeight" min="0" max="60" step="1" value="20">
+          <input autocomplete="off" type="range" id="spawnHeight" min="0" max="60" step="1" value="20">
         </div>
       </section>
 
@@ -980,15 +1009,15 @@
         <div class="details-body">
           <div class="field" id="spawnVarField">
             <label for="spawnVar">Size variation <span class="val" id="spawnVarV">35%</span></label>
-            <input type="range" id="spawnVar" min="0" max="0.9" step="0.05" value="0.35">
+            <input autocomplete="off" type="range" id="spawnVar" min="0" max="0.9" step="0.05" value="0.35">
           </div>
           <div class="field">
             <label for="spawnFric">Grip <span class="val" id="spawnFricV">0.50</span></label>
-            <input type="range" id="spawnFric" min="0" max="1.5" step="0.05" value="0.5">
+            <input autocomplete="off" type="range" id="spawnFric" min="0" max="1.5" step="0.05" value="0.5">
           </div>
           <div class="field" id="spawnBounceField">
             <label for="spawnBounce">Bounce <span class="val" id="spawnBounceV">0.00</span></label>
-            <input
+            <input autocomplete="off"
               type="range"
               id="spawnBounce"
               min="0"
@@ -1001,7 +1030,7 @@
           </div>
           <div class="field">
             <label for="spawnDens">Weight <span class="val" id="spawnDensV">1.0</span></label>
-            <input type="range" id="spawnDens" min="0.1" max="20" step="0.1" value="1">
+            <input autocomplete="off" type="range" id="spawnDens" min="0.1" max="20" step="0.1" value="1">
           </div>
         </div>
       </details>
@@ -1027,7 +1056,7 @@
         </div>
         <div class="field">
           <label for="solverQuality">Quality</label>
-          <select id="solverQuality">
+          <select autocomplete="off" id="solverQuality">
             <option value="scene">Scene-tuned</option>
             <option value="6">Fast · 6 passes</option>
             <option value="10">Balanced · 10 passes</option>
@@ -1037,7 +1066,7 @@
         </div>
         <div class="field">
           <label for="grav">Gravity <span class="val" id="gravV">-10.0</span></label>
-          <input type="range" id="grav" min="-30" max="5" step="0.5" value="-10">
+          <input autocomplete="off" type="range" id="grav" min="-30" max="5" step="0.5" value="-10">
         </div>
       </section>
 
@@ -1048,22 +1077,22 @@
             <legend>Physics engine</legend>
             <div class="radio-stack">
               <label class="check">
-                <input type="radio" name="backend" id="backendAuto" value="auto" checked>
+                <input autocomplete="off" type="radio" name="backend" id="backendAuto" value="auto" checked>
                 <span>Auto <small class="support">Use WebGPU when it is ready.</small></span>
               </label>
               <label class="check">
-                <input type="radio" name="backend" id="backendGpu" value="gpu">
+                <input autocomplete="off" type="radio" name="backend" id="backendGpu" value="gpu">
                 <span>WebGPU <small class="support">Parallel f32 playground engine.</small></span>
               </label>
               <label class="check">
-                <input type="radio" name="backend" id="backendCpu" value="cpu">
+                <input autocomplete="off" type="radio" name="backend" id="backendCpu" value="cpu">
                 <span>CPU reference <small class="support">Sequential f64 research reference.</small></span>
               </label>
             </div>
           </fieldset>
           <p class="hint" id="gpuStatus" role="status" aria-live="polite"></p>
           <label class="check">
-            <input type="checkbox" id="profilePasses">
+            <input autocomplete="off" type="checkbox" id="profilePasses">
             <span>Profile GPU passes</span>
           </label>
           <button id="verifyGpu" class="quiet" type="button">Verify GPU against CPU</button>
@@ -1075,35 +1104,35 @@
         <div class="details-body">
           <div class="field">
             <label for="iters">Solver passes <span class="val" id="itersV">10</span></label>
-            <input type="range" id="iters" min="1" max="40" step="1" value="10">
+            <input autocomplete="off" type="range" id="iters" min="1" max="40" step="1" value="10">
           </div>
           <div class="field">
             <label for="dt">Numerical timestep <span class="val" id="dtV">1/60 s</span></label>
-            <input type="range" id="dt" min="1" max="4" step="1" value="2">
+            <input autocomplete="off" type="range" id="dt" min="1" max="4" step="1" value="2">
           </div>
           <label class="check">
-            <input type="checkbox" id="postStab">
+            <input autocomplete="off" type="checkbox" id="postStab">
             <span>Post-stabilization pass</span>
           </label>
           <div class="field" id="alphaField">
             <label for="alpha">Stabilization α <span class="val" id="alphaV">0.950</span></label>
-            <input type="range" id="alpha" min="0" max="1" step="0.005" value="0.95">
+            <input autocomplete="off" type="range" id="alpha" min="0" max="1" step="0.005" value="0.95">
           </div>
           <div class="field">
             <label for="gamma">Warm-start decay γ <span class="val" id="gammaV">0.9990</span></label>
-            <input type="range" id="gamma" min="0" max="0.9999" step="0.0005" value="0.999">
+            <input autocomplete="off" type="range" id="gamma" min="0" max="0.9999" step="0.0001" value="0.999">
           </div>
           <div class="field">
             <label for="betaLin">Linear ramp β <span class="val" id="betaLinV">10000</span></label>
-            <input type="range" id="betaLin" min="0" max="6" step="0.05" value="4">
+            <input autocomplete="off" type="range" id="betaLin" min="0" max="6" step="0.05" value="4">
           </div>
           <div class="field">
             <label for="betaAng">Angular ramp β <span class="val" id="betaAngV">100</span></label>
-            <input type="range" id="betaAng" min="0" max="6" step="0.05" value="2">
+            <input autocomplete="off" type="range" id="betaAng" min="0" max="6" step="0.05" value="2">
           </div>
           <div class="field">
             <label for="kstart">Initial penalty k <span class="val" id="kstartV">1</span></label>
-            <input type="range" id="kstart" min="-1" max="6" step="0.1" value="0">
+            <input autocomplete="off" type="range" id="kstart" min="-1" max="6" step="0.1" value="0">
           </div>
           <button id="resetParams" type="button">Restore solver defaults</button>
         </div>
@@ -1113,11 +1142,11 @@
         <summary>Paper fidelity</summary>
         <div class="details-body">
           <label class="check">
-            <input type="checkbox" id="rotInertia" checked>
+            <input autocomplete="off" type="checkbox" id="rotInertia" checked>
             <span>Rotated inertia tensor <small class="support">Equation 8 as published.</small></span>
           </label>
           <label class="check">
-            <input type="checkbox" id="paperSprings" checked>
+            <input autocomplete="off" type="checkbox" id="paperSprings" checked>
             <span>Spring geometric stiffness <small class="support">Equation 17.</small></span>
           </label>
         </div>
@@ -1127,12 +1156,12 @@
         <summary>World safety bounds</summary>
         <div class="details-body">
           <label class="check">
-            <input type="checkbox" id="killEnabled" checked>
+            <input autocomplete="off" type="checkbox" id="killEnabled" checked>
             <span>Remove escaped objects</span>
           </label>
           <div class="field">
             <label for="killDepth">Fall depth <span class="val"><span id="killDepthV">30</span> m</span></label>
-            <input type="range" id="killDepth" min="2" max="200" step="1" value="30">
+            <input autocomplete="off" type="range" id="killDepth" min="2" max="200" step="1" value="30">
           </div>
           <button id="killRefit" type="button">Refit bounds to world</button>
         </div>
@@ -1208,7 +1237,7 @@
       <span>Drop tool</span><span>Click or paint to add single objects. <kbd>Shift</kbd>+drag works from any tool.</span>
       <span>Throw tool</span><span>Click a point to fire the selected rigid shape toward it.</span>
       <span>Erase tool</span><span>Click any movable body to remove it.</span>
-      <span>Camera</span><span>Drag empty space to orbit; right-drag to pan; scroll or pinch to zoom.</span>
+      <span>Camera</span><span>Drag empty space to orbit; right-drag or drag with two fingers to pan; scroll or pinch to zoom.</span>
     </div>
     <h3>Keyboard</h3>
     <div class="help-grid">
@@ -1222,7 +1251,11 @@
       <kbd>R</kbd><span>Restart the scene</span>
       <kbd>F</kbd><span>Fire toward the camera focus</span>
       <kbd>Home</kbd><span>Frame the scene</span>
+      <kbd>← → ↑ ↓</kbd><span>Orbit the camera</span>
+      <kbd>+ −</kbd><span>Zoom in or out</span>
       <kbd>H</kbd><span>Show or hide controls</span>
+      <kbd>?</kbd><span>Open this help</span>
+      <kbd>Esc</kbd><span>Close this help, or the controls on a narrow screen</span>
     </div>
     <h3>About</h3>
     <p>
@@ -1240,6 +1273,7 @@
   <h3 id="errorTitle">The playground could not start</h3>
   <p id="errorText"></p>
   <button id="errorRetry" type="button">Reload playground</button>
+  <button id="errorFallback" type="button" hidden>Reload with WebGL2 and the CPU engine</button>
 </section>
 
 <script type="module" src="./src/app/main.js"></script>

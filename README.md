@@ -83,11 +83,13 @@ node tools/bundle.mjs
 | **Lab** | CPU or WebGPU engine, solver fidelity, a GPU-against-CPU cross-check, profiling, world-safety controls |
 
 The toolbar provides **Grab**, **Drop**, **Throw** and **Erase**. Drag empty space to
-orbit, right-drag to pan, scroll or pinch to zoom; the same tools work with touch.
+orbit, right-drag or drag with two fingers to pan, scroll or pinch to zoom; the same tools
+work with touch.
 
 <kbd>1</kbd>–<kbd>4</kbd> select tools, <kbd>Space</kbd> pauses, <kbd>.</kbd> steps,
 <kbd>R</kbd> restarts, <kbd>Z</kbd> undoes an add, <kbd>F</kbd> fires,
-<kbd>Home</kbd> frames the scene, <kbd>H</kbd> hides the controls, <kbd>/</kbd> opens help.
+<kbd>Home</kbd> frames the scene, <kbd>H</kbd> hides the controls, <kbd>?</kbd> opens help,
+and the arrow keys and <kbd>+</kbd>/<kbd>−</kbd> move the camera.
 
 ## Two backends, one scene graph
 

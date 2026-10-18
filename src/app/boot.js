@@ -41,6 +41,9 @@ const canvas = $('view');
 const solver = new Solver();
 const camera = new OrbitCamera();
 const urlParams = new URLSearchParams(location.search);
+/** A URL switch is on when present, unless set to 0, false, off or no. */
+const urlFlag = (name) =>
+  urlParams.has(name) && !/^(?:0|false|off|no)$/i.test(urlParams.get(name));
 
 let renderer = null;
 let gpuBackend = null;
@@ -50,14 +53,14 @@ let gpuStatus = 'WebGPU not available in this browser';
 // renderer. Useful when a driver reports WebGPU but misbehaves, and when
 // running under a software adapter where compiling the compute pipelines
 // takes long enough to look like a hang.
-const forceNoGpu = urlParams.has('nogpu');
+const forceNoGpu = urlFlag('nogpu');
 
 // `?nojac=1` turns OFF caching of the contact Jacobian at x_t, restoring the
 // pre-change behaviour of rebuilding it from the current iterate. Purely a
 // bisect handle: the contact-arena layout and the Jacobian cache landed
 // together, and this is the only one of the two that can be switched at
 // runtime, so it separates them in a single reload.
-const forceNoJacobianCache = urlParams.has('nojac');
+const forceNoJacobianCache = urlFlag('nojac');
 
 /** Show a line of boot progress; replaced by the real UI once running. */
 function bootStatus(text) {
@@ -134,8 +137,8 @@ if (!renderer) {
     gpuStatus += ` · ${name}`;
     if (looksLikeSoftware(name)) {
       gpuStatus =
-        `No GPU access in this browser session — rendering in software (${name}). ` +
-        `WebGPU reports no adapter for the same reason.`;
+        `No GPU access in this browser session — rendering in software (${name}).` +
+        (forceNoGpu ? '' : ' WebGPU reports no adapter for the same reason.');
     }
   } catch (err) {
     $('error').style.display = 'block';
@@ -144,6 +147,8 @@ if (!renderer) {
       '<br><br>This sandbox needs <code>WebGL2</code> or <code>WebGPU</code>. ' +
       'Try a current Chrome, Edge, Firefox or Safari with hardware acceleration enabled.';
     bootStatus('');
+    // main.js leaves an explained failure on screen instead of a stack trace.
+    if (err && typeof err === 'object') err.presented = true;
     throw err;
   }
 }
@@ -153,15 +158,24 @@ function escapeHtml(s) {
 }
 
 let noticeTimer = 0;
+let noticeSerial = 0;
 function showNotice(message, tone = 'info', timeout = 2800) {
   const notice = $('notice');
   if (!notice) return;
-  notice.textContent = message;
-  notice.dataset.tone = tone;
-  notice.hidden = false;
   clearTimeout(noticeTimer);
+  notice.dataset.tone = tone;
+  const serial = ++noticeSerial;
+  if (notice.textContent === message) {
+    // Unchanged text is not announced again, so write it in a fresh task.
+    notice.textContent = '';
+    setTimeout(() => {
+      if (serial === noticeSerial) notice.textContent = message;
+    }, 0);
+  } else {
+    notice.textContent = message;
+  }
   noticeTimer = setTimeout(() => {
-    notice.hidden = true;
+    notice.textContent = '';
   }, timeout);
 }
 
@@ -179,6 +193,9 @@ if (forceNoJacobianCache) solver.cachedContactJacobians = false;
 const state = {
   paused: false,
   singleStep: false,
+  // Set once the graphics engine has stopped (see showRuntimeFailure); async
+  // work finishing afterwards must not resume the simulation under it.
+  failed: false,
   sceneId: SCENES_BY_ID[urlParams.get('scene')]?.id ?? 'soft_shapes',
   activeTool: 'grab',
   timeScale: 1,
@@ -246,6 +263,14 @@ function mutateTopology(fn) {
   if (gpuBackend) gpuBackend.prepareTopologyChange();
   state.staticDirty = true;
   state.fabricDirty = true;
+  // Removal shifts body indices, so a live grab must be re-resolved or
+  // dropped; otherwise the GPU grab would drag whichever body inherits the
+  // old index.
+  if (drag.body) {
+    const index = solver.bodies.indexOf(drag.body);
+    if (index < 0) drag.release();
+    else if (gpuBackend?.grab) gpuBackend.grab.body = index;
+  }
   return result;
 }
 
@@ -337,16 +362,6 @@ const killbox = {
     });
     if (removed == null) return 0;
     this.culled += removed;
-
-    // Removal shifts body indices, so a live grab must be re-resolved or
-    // dropped — otherwise it would start dragging an unrelated body.
-    if (drag.body) {
-      if (solver.bodies.includes(drag.body)) {
-        if (gpuBackend?.grab) gpuBackend.grab.body = solver.bodies.indexOf(drag.body);
-      } else {
-        drag.release();
-      }
-    }
     return removed;
   },
 
@@ -453,8 +468,8 @@ function loadScene(id, { silent = false } = {}) {
 
   if (
     !pendingGpuSceneId &&
-    !urlParams.has('gputest') &&
-    !urlParams.has('selftest')
+    !urlFlag('gputest') &&
+    !urlFlag('selftest')
   ) {
     const nextUrl = new URL(location.href);
     nextUrl.searchParams.set('scene', scene.id);
@@ -627,9 +642,11 @@ let dragDistance = 0;
 let wantsLock = false;
 let lastSpawnAt = 0;
 
-/** Live pointers, for pinch. */
+/** Live pointers, for the two-finger camera gesture. */
 const activePointers = new Map();
 let pinchDistance = 0;
+let pinchMidX = 0;
+let pinchMidY = 0;
 
 const isLocked = () => document.pointerLockElement === canvas;
 
@@ -659,12 +676,16 @@ canvas.addEventListener('pointerdown', (event) => {
   }
   activePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
 
-  // A second pointer during a camera gesture becomes a pinch zoom. Touch has
-  // no wheel, so without this there is no way to zoom on a tablet at all.
-  if (activePointers.size === 2 && (pointerMode === 'orbit' || pointerMode === 'pan')) {
+  // A second pointer turns whatever the first one started into the camera
+  // gesture: spread zooms and the midpoint pans. Touch has no wheel and no
+  // right button, so without this a tablet could not zoom or pan with any
+  // tool but Grab, and could never pan.
+  if (activePointers.size === 2 && pointerMode !== null && pointerMode !== 'pinch') {
     releaseLock();
+    if (pointerMode === 'drag') drag.release();
     pointerMode = 'pinch';
     pinchDistance = pointerSpread();
+    [pinchMidX, pinchMidY] = pointerMidpoint();
     return;
   }
 
@@ -721,6 +742,12 @@ function pointerSpread() {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
+/** Midpoint of the two live pointers, for the two-finger pan. */
+function pointerMidpoint() {
+  const [a, b] = [...activePointers.values()];
+  return [(a.x + b.x) * 0.5, (a.y + b.y) * 0.5];
+}
+
 canvas.addEventListener('pointermove', (event) => {
   if (activePointers.has(event.pointerId)) {
     activePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
@@ -729,8 +756,12 @@ canvas.addEventListener('pointermove', (event) => {
   if (pointerMode === 'pinch') {
     if (activePointers.size < 2) return;
     const spread = pointerSpread();
+    const [midX, midY] = pointerMidpoint();
     if (pinchDistance > 0 && spread > 0) camera.zoom(pinchDistance / spread);
+    camera.pan(midX - pinchMidX, midY - pinchMidY);
     pinchDistance = spread;
+    pinchMidX = midX;
+    pinchMidY = midY;
     return;
   }
 
@@ -874,17 +905,19 @@ function rememberSpawn(bodies, label, coalesceKey = null) {
 function updateUndoState() {
   const button = $('undoSpawn');
   if (!button) return;
-  const available = spawnHistory.some((batch) =>
-    batch.bodies.some((body) => solver.bodies.includes(body))
-  );
+  // One set, not includes() per body: a 2,500-object batch in a 50k scene
+  // took ~50 ms per refresh, and this runs on every Drop-paint spawn.
+  const alive = new Set(solver.bodies);
+  const available = spawnHistory.some((batch) => batch.bodies.some((body) => alive.has(body)));
   button.disabled = !available || state.busy;
 }
 
 function undoLastSpawn() {
   let batch = null;
+  const alive = new Set(solver.bodies);
   while (spawnHistory.length > 0 && !batch) {
     const candidate = spawnHistory.pop();
-    const live = candidate.bodies.filter((body) => solver.bodies.includes(body));
+    const live = candidate.bodies.filter((body) => alive.has(body));
     if (live.length > 0) batch = { ...candidate, bodies: live };
   }
   if (!batch) {
@@ -1086,11 +1119,16 @@ $('stepBtn').addEventListener('click', () => {
   setPaused(true, false);
   state.singleStep = true;
 });
-$('launch').addEventListener('click', launchProjectile);
+// Not passed directly: the click event would arrive as launchProjectile's ray.
+$('launch').addEventListener('click', () => launchProjectile());
 $('cameraHome').addEventListener('click', frameWorld);
 $('undoSpawn').addEventListener('click', undoLastSpawn);
 $('shareWorld').addEventListener('click', async () => {
   const url = new URL(location.href);
+  // Share the scene, not this session's diagnostic switches.
+  for (const name of ['nogpu', 'nojac', 'report', 'gputest', 'selftest']) {
+    url.searchParams.delete(name);
+  }
   url.searchParams.set('scene', state.sceneId);
   try {
     await navigator.clipboard.writeText(url.href);
@@ -1287,6 +1325,9 @@ function bindSlider(id, valueId, apply, format) {
     const raw = Number(input.value);
     const value = apply(raw);
     label.textContent = format ? format(value, raw) : String(value);
+    // Log-scale and indexed sliders would otherwise announce the raw
+    // exponent or index rather than the value shown beside them.
+    input.setAttribute('aria-valuetext', label.textContent);
   };
   input.addEventListener('input', update);
   update();
@@ -1365,6 +1406,7 @@ $('resetParams').addEventListener('click', () => {
   const preserved = { broadphase: solver.broadphase, bodyOrder: solver.bodyOrder };
   solver.defaultParams();
   Object.assign(solver, preserved);
+  if (forceNoJacobianCache) solver.cachedContactJacobians = false;
   solverQualityOverridden = false;
   solver.iterations = activeSceneIterations;
 
@@ -1479,7 +1521,11 @@ function setSidebarCollapsed(collapsed) {
   $('sidebar').setAttribute('aria-hidden', String(collapsed));
   $('sidebar').inert = collapsed;
   $('scrim').hidden = collapsed || !narrowControls.matches;
-  if (collapsed) $('toggle').focus({ preventScroll: true });
+  // Only rescue focus from the now-inert sidebar. Moving it anywhere else
+  // would hand the next Space to the toggle instead of the pause shortcut.
+  if (collapsed && $('sidebar').contains(document.activeElement)) {
+    $('toggle').focus({ preventScroll: true });
+  }
 }
 
 $('toggle').addEventListener('click', () => {
@@ -1492,6 +1538,8 @@ const narrowControls = window.matchMedia('(max-width: 680px)');
 setSidebarCollapsed(narrowControls.matches);
 const collapseForNarrowLayout = (event) => {
   if (event.matches) setSidebarCollapsed(true);
+  // Widening keeps the sidebar as it is but drops the narrow-only scrim.
+  else $('scrim').hidden = true;
 };
 if (narrowControls.addEventListener) {
   narrowControls.addEventListener('change', collapseForNarrowLayout);
@@ -1584,7 +1632,7 @@ for (const radio of backendRadios) {
       if (target === 'gpu' && gpuBackend) gpuBackend.topologyDirty = true;
       showNotice(`${target === 'gpu' ? 'WebGPU' : 'CPU reference'} engine active.`);
     } finally {
-      state.busy = false;
+      if (!state.failed) state.busy = false;
       updateBackendControls();
     }
   });
@@ -1623,6 +1671,10 @@ $('verifyGpu').addEventListener('click', async () => {
   updateBackendControls();
   button.textContent = 'Verifying…';
   try {
+    // The test scenes repack this backend, so the sandbox's next pack starts
+    // from the CPU objects. Bring GPU-only state home first: current poses
+    // rather than the sampled mirrors, and fracture and tear flags.
+    if (state.backend === 'gpu' && gpuBackend.bodyBuf) await gpuBackend.syncToCPU(solver);
     const { runGpuTests } = await import('./gputest.js');
     const report = await runGpuTests(gpuBackend);
     const worst = report.results
@@ -1644,76 +1696,126 @@ $('verifyGpu').addEventListener('click', async () => {
     state.staticDirty = true;
     state.fabricDirty = true;
     state.verifying = false;
-    state.busy = false;
-    state.paused = wasPaused;
-    button.textContent = 'Verify GPU vs CPU';
+    if (!state.failed) {
+      state.busy = false;
+      state.paused = wasPaused;
+    }
+    button.textContent = 'Verify GPU against CPU';
     syncTransportUi();
     updateBackendControls();
   }
 });
 
+/**
+ * The shortcut a keydown names. Digits go by position, so 1-4 work on layouts
+ * (AZERTY) whose unshifted number row types symbols; letters and punctuation
+ * go by character, so Z is Z on QWERTZ and '.' is wherever the layout puts it.
+ */
+function shortcutKey(event) {
+  const digit = /^(?:Digit|Numpad)([1-4])$/.exec(event.code);
+  if (digit) return digit[1];
+  if (event.code === 'Space') return ' ';
+  return event.key.length === 1 ? event.key.toLowerCase() : event.key;
+}
+
+const RANGE_KEYS = new Set([
+  'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown',
+]);
+const ACTIVATING_INPUTS = new Set(['button', 'checkbox', 'color', 'file', 'radio', 'reset', 'submit']);
+
+/**
+ * Whether the focused element handles this key itself. A clicked button keeps
+ * focus, so treating every focused control as off-limits made the shortcuts
+ * stop working after any click; controls only own the keys they act on.
+ */
+function keyBelongsToTarget(target, key) {
+  if (target.isContentEditable) return true;
+  const tag = target.tagName;
+  if (tag === 'TEXTAREA' || tag === 'SELECT') return true;
+  if (tag === 'INPUT') {
+    if (target.type === 'range') return RANGE_KEYS.has(key);
+    if (ACTIVATING_INPUTS.has(target.type)) {
+      return key === ' ' || key === 'Enter' || (target.type === 'radio' && key.startsWith('Arrow'));
+    }
+    return true; // text-like fields take every key
+  }
+  if (tag === 'BUTTON' || tag === 'A' || tag === 'SUMMARY') return key === ' ' || key === 'Enter';
+  return false;
+}
+
+/** Keyboard camera control, matching what a 10 px drag or a wheel notch does. */
+const CAMERA_KEYS = {
+  ArrowLeft: () => camera.orbit(10 * ORBIT_SPEED, 0),
+  ArrowRight: () => camera.orbit(-10 * ORBIT_SPEED, 0),
+  ArrowUp: () => camera.orbit(0, -10 * ORBIT_SPEED),
+  ArrowDown: () => camera.orbit(0, 10 * ORBIT_SPEED),
+  '+': () => camera.zoom(1 / 1.12),
+  '=': () => camera.zoom(1 / 1.12),
+  '-': () => camera.zoom(1.12),
+};
+
 window.addEventListener('keydown', (event) => {
-  // Never steal a keystroke aimed at a control or a text field.
-  const tag = event.target.tagName;
-  if (
-    tag === 'INPUT' ||
-    tag === 'SELECT' ||
-    tag === 'TEXTAREA' ||
-    tag === 'BUTTON' ||
-    tag === 'A' ||
-    tag === 'SUMMARY'
-  ) return;
-  if (event.target.isContentEditable) return;
   // Ctrl+R, Cmd+R and friends belong to the browser. Without this, reloading
   // the page also rebuilt the scene on the way out, and Alt+F fired a
   // projectile into a menu.
   if (event.ctrlKey || event.metaKey || event.altKey) return;
+  // The help dialog is modal and closes itself on Escape.
+  if (helpDialog.open) return;
+  const key = shortcutKey(event);
+  if (keyBelongsToTarget(event.target, key)) return;
+  const moveCamera = CAMERA_KEYS[key];
+  if (moveCamera) {
+    // Checked before the repeat filter: a held arrow should keep turning.
+    event.preventDefault();
+    if (!state.failed) moveCamera();
+    return;
+  }
   if (event.repeat) return;
-  if (state.busy && event.code !== 'Escape') return;
+  if (state.busy && key !== 'Escape') return;
 
-  switch (event.code) {
-    case 'Space':
+  switch (key) {
+    case ' ':
       event.preventDefault();
       togglePause();
       break;
-    case 'KeyR':
+    case 'r':
       loadScene(state.sceneId);
       break;
-    case 'KeyF':
+    case 'f':
       launchProjectile();
       break;
-    case 'KeyZ':
+    case 'z':
       undoLastSpawn();
       break;
-    case 'KeyH':
+    case 'h':
       setSidebarCollapsed(!document.body.classList.contains('collapsed'));
       break;
-    case 'Digit1':
+    case '1':
       setActiveTool('grab');
       break;
-    case 'Digit2':
+    case '2':
       setActiveTool('drop');
       break;
-    case 'Digit3':
+    case '3':
       setActiveTool('blast');
       break;
-    case 'Digit4':
+    case '4':
       setActiveTool('erase');
       break;
     case 'Home':
       frameWorld();
       break;
-    case 'Slash':
+    case '/':
+    case '?':
       event.preventDefault();
       helpDialog.showModal();
       break;
     case 'Escape':
-      if (helpDialog.open) helpDialog.close();
-      else if (narrowControls.matches && !document.body.classList.contains('collapsed')) {
+      if (narrowControls.matches && !document.body.classList.contains('collapsed')) {
         setSidebarCollapsed(true);
       }
       break;
-    case 'Period':
+    case '.':
       if (!state.busy) {
         setPaused(true, false);
         state.singleStep = true;
@@ -1872,14 +1974,28 @@ function doStep() {
 }
 
 function frame(now) {
+  try {
+    advanceFrame(now);
+  } catch (err) {
+    // Uncaught, this would end the loop silently behind main.js's generic
+    // start-up panel. Stop deliberately and say why; main.js still reports it.
+    if (err && typeof err === 'object') err.presented = true;
+    showRuntimeFailure(
+      `The playground stopped on an unexpected error: ${err?.message ?? err}`,
+      'The playground stopped'
+    );
+    globalThis.reportError?.(err);
+    return;
+  }
+  requestAnimationFrame(frame);
+}
+
+function advanceFrame(now) {
   const frameMs = Math.min(now - lastFrameTime, 100);
   lastFrameTime = now;
   smoothedFrameMs += (frameMs - smoothedFrameMs) * 0.1;
 
-  if (state.verifying) {
-    requestAnimationFrame(frame);
-    return;
-  }
+  if (state.verifying) return;
 
   stepPhysics(frameMs);
 
@@ -1964,7 +2080,6 @@ function frame(now) {
   }
 
   framesRendered++;
-  requestAnimationFrame(frame);
 }
 
 let framesRendered = 0;
@@ -1972,7 +2087,7 @@ let framesRendered = 0;
 // `?report=1` posts a health summary to the dev server once the sandbox has
 // been running for a moment, so startup can be confirmed from a browser whose
 // console is not reachable.
-if (new URLSearchParams(location.search).has('report')) {
+if (urlFlag('report')) {
   const t0 = performance.now();
   const mark = framesRendered;
   setTimeout(() => {
@@ -2029,7 +2144,8 @@ function updateHud() {
   $('sTotal').textContent = formatNumber(solver.bodies.length);
   $('sCulled').textContent = formatNumber(killbox.culled);
   $('engineBadge').textContent = backendLabel;
-  $('bodyBadge').textContent = `${formatNumber(movableBodies)} objects`;
+  $('bodyBadge').textContent =
+    `${formatNumber(movableBodies)} object${movableBodies === 1 ? '' : 's'}`;
 
   if (gpuMode && g?.gpuReady) {
     $('sContacts').textContent = formatNumber(g.contacts);
@@ -2107,6 +2223,8 @@ function formatNumber(v) {
   if (!Number.isFinite(v)) return '∞';
   const a = Math.abs(v);
   if (a === 0) return '0';
+  // Counts: "Add 10 objects", not "Add 10.00 objects".
+  if (Number.isInteger(v) && a < 1e4) return String(v);
   if (a >= 1e6) return `${(v / 1e6).toFixed(2)}M`;
   if (a >= 1e4) return `${(v / 1e3).toFixed(1)}k`;
   if (a >= 100) return v.toFixed(0);
@@ -2114,7 +2232,8 @@ function formatNumber(v) {
   return v.toPrecision(3);
 }
 
-function showRuntimeFailure(message) {
+function showRuntimeFailure(message, title = 'The graphics engine stopped') {
+  state.failed = true;
   state.paused = true;
   state.singleStep = false;
   state.verifying = false;
@@ -2124,7 +2243,7 @@ function showRuntimeFailure(message) {
   for (const id of ['view', 'sidebar', 'toggle', 'toolDock', 'hud']) {
     $(id).inert = true;
   }
-  $('errorTitle').textContent = 'The graphics engine stopped';
+  $('errorTitle').textContent = title;
   $('errorText').textContent = message;
   $('error').style.display = 'block';
   bootStatus('');
@@ -2152,6 +2271,15 @@ if (gpuBackend?.device?.lost) {
     showRuntimeFailure(
       'WebGPU lost its device. Reload the playground to request a fresh graphics device.'
     );
+    // A loss that recurs on every load (a crashing GPU process, a blocklisted
+    // driver) would make plain reload a loop, so offer the path without WebGPU.
+    const fallback = $('errorFallback');
+    fallback.hidden = false;
+    fallback.onclick = () => {
+      const url = new URL(location.href);
+      url.searchParams.set('nogpu', '1');
+      location.assign(url);
+    };
   });
 }
 
