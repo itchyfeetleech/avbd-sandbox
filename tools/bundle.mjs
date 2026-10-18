@@ -20,7 +20,7 @@
  *   node tools/bundle.mjs [outfile]
  */
 
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -60,16 +60,19 @@ function transform({ source, dir }) {
   let out = source;
 
   const idFor = (spec) => idOf(resolve(dir, spec));
+  // A trailing comment must not stop a statement matching: an import left
+  // untransformed inside the module's async body is a syntax error.
+  const end = String.raw`;?[ \t]*(?:\/\/[^\n]*)?$`;
 
   // import * as ns from './x.js'
   out = out.replace(
-    /^import\s+\*\s+as\s+(\w+)\s+from\s+'(\.[^']+)';?$/gm,
+    new RegExp(String.raw`^import\s+\*\s+as\s+(\w+)\s+from\s+'(\.[^']+)'` + end, 'gm'),
     (_, ns, spec) => `const ${ns} = await __req('${idFor(spec)}');`
   );
 
   // import { a, b as c } from './x.js'
   out = out.replace(
-    /^import\s*\{([^}]*)\}\s*from\s+'(\.[^']+)';?$/gm,
+    new RegExp(String.raw`^import\s*\{([^}]*)\}\s*from\s+'(\.[^']+)'` + end, 'gm'),
     (_, names, spec) => {
       const bindings = names
         .split(',')
@@ -91,7 +94,7 @@ function transform({ source, dir }) {
   );
 
   // export { A, B };
-  out = out.replace(/^export\s*\{([^}]*)\};?$/gm, (_, names) => {
+  out = out.replace(new RegExp(String.raw`^export\s*\{([^}]*)\}` + end, 'gm'), (_, names) => {
     for (const n of names.split(',').map((s) => s.trim()).filter(Boolean)) {
       exported.add(n.split(/\s+as\s+/).pop().trim());
     }
@@ -110,6 +113,9 @@ function transform({ source, dir }) {
   if (/^export\s/m.test(out)) {
     throw new Error(`unhandled export form:\n${out.match(/^export\s.*/m)[0]}`);
   }
+  if (/^\s*import[\s{*'"]/m.test(out)) {
+    throw new Error(`unhandled import form:\n${out.match(/^\s*import[\s{*'"].*/m)[0]}`);
+  }
 
   const assigns = [...exported].map((n) => `__e.${n} = ${n};`).join('\n');
   return `${out}\n${assigns}\n`;
@@ -123,7 +129,17 @@ for (const [id, mod] of modules) {
   );
 }
 
-const runtime = `
+// The bundle redistributes the source, including the ports of the authors'
+// MIT-licensed reference code, so it carries both notices.
+const notices = [
+  await readFile(join(ROOT, 'LICENSE'), 'utf8'),
+  await readFile(join(ROOT, 'THIRD_PARTY_NOTICES.md'), 'utf8'),
+].join('\n').replace(/\*\//g, '* /').trimEnd();
+
+const runtime = `/*!
+${notices}
+*/
+
 // Minimal async module registry. Each module body is an async function, which
 // preserves top-level await and keeps module scope private.
 const __M = {};
@@ -177,6 +193,7 @@ const page = html.replace(
   () => `<script type="module">\n${inlineRuntime}\n</script>`
 );
 
+await mkdir(dirname(OUT), { recursive: true });
 await writeFile(OUT, page);
 
 const kb = (page.length / 1024).toFixed(0);

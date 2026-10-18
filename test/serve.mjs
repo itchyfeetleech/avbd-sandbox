@@ -10,6 +10,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { readFile, rm, writeFile } from 'node:fs/promises';
+import { request } from 'node:http';
 import { createServer } from 'node:net';
 import { networkInterfaces } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -21,6 +22,32 @@ const REPORT = join(ROOT, 'test', 'gpu-report.json');
 const MAX_REPORT_BYTES = 1024 * 1024;
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * A request sent exactly as written. fetch() normalizes the path first, so
+ * "/src/%2e%2e/README.md" would arrive as "/README.md" and test nothing new.
+ */
+function raw(port, path, { method = 'GET', headers = {}, body } = {}) {
+  return new Promise((resolve, reject) => {
+    const req = request(
+      {
+        host: '127.0.0.1',
+        port,
+        path,
+        method,
+        headers: { Host: `127.0.0.1:${port}`, ...headers },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: data }));
+      }
+    );
+    req.on('error', reject);
+    if (body !== undefined) req.write(body);
+    req.end();
+  });
+}
 
 async function reserveLoopbackPort() {
   const probe = createServer();
@@ -113,11 +140,29 @@ try {
   assert.match(await moduleResponse.text(), /URLSearchParams/);
   console.log('PASS  serves allowlisted source modules');
 
-  for (const path of ['/README.md', '/.git/HEAD', '/src/%2e%2e/README.md']) {
-    const response = await fetch(`${baseUrl}${path}`, { redirect: 'manual' });
+  for (const path of [
+    '/README.md', '/.git/HEAD', '/src/%2e%2e/README.md', '/src/..%2fREADME.md',
+    '/src/%2e%2e%2f.git/HEAD',
+  ]) {
+    const response = await raw(port, path);
     assert.equal(response.status, 403, `${path} returned ${response.status}`);
   }
-  console.log('PASS  denies README, .git metadata, and traversal outside public roots');
+  // A backslash separates paths only on Windows (403 there); elsewhere this
+  // names a missing file inside src/ (404). Either way it is not served.
+  const backslash = await raw(port, '/src/%5c..%5cREADME.md');
+  assert.ok([403, 404].includes(backslash.status), `backslash traversal returned ${backslash.status}`);
+  console.log('PASS  denies README, .git metadata, and encoded traversal outside public roots');
+
+  for (const path of ['/%2Fevil.example%2F..%2Fsrc%2Fapp', '/src//app', '/src/app']) {
+    const response = await raw(port, path);
+    assert.equal(response.status, 301, `${path} returned ${response.status}`);
+    assert.equal(response.headers.location, '/src/app/', `${path} redirected off-site`);
+  }
+  console.log('PASS  directory redirects stay on this server');
+
+  const rebound = await raw(port, '/', { headers: { Host: 'evil.example' } });
+  assert.equal(rebound.status, 403);
+  console.log('PASS  refuses foreign Host names (DNS rebinding)');
 
   const otherAddress = externalIPv4();
   if (otherAddress) {
@@ -149,13 +194,39 @@ try {
 
   const oversized = await fetch(`${baseUrl}/report`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/octet-stream' },
+    headers: { 'Content-Type': 'application/json' },
     body: new Uint8Array(MAX_REPORT_BYTES + 1),
   });
   assert.equal(oversized.status, 413);
   assert.equal(await oversized.text(), 'Report too large');
   assert.equal(await readFile(REPORT, 'utf8'), smallReport);
   console.log('PASS  accepts bounded reports and rejects payloads over 1 MiB without overwriting');
+
+  // A page on another site can send a simple text/plain POST without asking,
+  // or a JSON one carrying its own Origin; neither may forge a verdict.
+  for (const headers of [
+    { 'Content-Type': 'text/plain' },
+    { 'Content-Type': 'application/json', Origin: 'http://evil.example' },
+  ]) {
+    const forged = await raw(port, '/report', { method: 'POST', headers, body: '{"ok":true}' });
+    assert.equal(forged.status, 403, `${JSON.stringify(headers)} returned ${forged.status}`);
+  }
+  assert.equal(await readFile(REPORT, 'utf8'), smallReport);
+  console.log('PASS  refuses cross-site report writes');
+
+  // Raw OSC and CSI sequences: a title change and a screen clear.
+  const hostile = '{"note":"\u001b]0;pwned\u0007\u001b[2J"}';
+  const logged = output.length;
+  const escaped = await raw(port, '/report', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: baseUrl },
+    body: hostile,
+  });
+  assert.equal(escaped.status, 200);
+  await delay(50);
+  assert.match(output.slice(logged), /\[report\]/);
+  assert.doesNotMatch(output.slice(logged), /[\u0000-\u0008\u000b-\u001f\u007f]/);
+  console.log('PASS  keeps terminal control sequences out of the server log');
 } finally {
   await stopChild(child);
   if (reportBefore === null) await rm(REPORT, { force: true });

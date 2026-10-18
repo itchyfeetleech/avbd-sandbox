@@ -20,9 +20,11 @@
  */
 
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+// A URL, not a path: import() reads a Windows path's drive letter as a scheme.
+const load = (relative) => import(pathToFileURL(join(ROOT, relative)).href);
 
 // WGSL reserved words (spec §2.3). Not the same as keywords in use.
 const RESERVED = new Set(`
@@ -281,11 +283,11 @@ function scanGrammar(label, wgsl) {
   }
 }
 
-const { SHADER_SOURCE } = await import(join(ROOT, 'src/physics/gpu/shaders.js'));
+const { SHADER_SOURCE } = await load('src/physics/gpu/shaders.js');
 scan('gpu/shaders.js', SHADER_SOURCE);
 scanGrammar('gpu/shaders.js', SHADER_SOURCE);
 
-const { RENDER_SHADER } = await import(join(ROOT, 'src/render/renderer_webgpu.js'));
+const { RENDER_SHADER } = await load('src/render/renderer_webgpu.js');
 scan('renderer_webgpu.js', RENDER_SHADER);
 scanGrammar('renderer_webgpu.js', RENDER_SHADER);
 
@@ -309,8 +311,8 @@ scanGrammar('renderer_webgpu.js', RENDER_SHADER);
 // entry point is simply never dispatched, and a uniform the host never writes
 // reads back as whatever was last in the buffer.
 
-const layout = await import(join(ROOT, 'src/physics/gpu/layout.js'));
-const backend = await import(join(ROOT, 'src/physics/gpu/backend.js'));
+const layout = await load('src/physics/gpu/layout.js');
+const backend = await load('src/physics/gpu/backend.js');
 
 const entryPoints = new Set(
   [...SHADER_SOURCE.matchAll(/@compute[\s\S]{0,80}?\bfn\s+(\w+)\s*\(/g)].map((m) => m[1])
