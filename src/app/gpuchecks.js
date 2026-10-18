@@ -426,7 +426,9 @@ export async function runGpuChecks(backend, { big = false } = {}) {
       backend.device.queue.writeBuffer(
         backend.consBuf,
         (oldRecord + 16) * 4,
-        new Uint32Array([oldInfo.contacts[0].feature ^ 0x00ffffff])
+        // Feature IDs are 24-bit odd integers stored as f32 values; flipping
+        // all 24 bits yields an even ID that can match no live feature.
+        new Float32Array([oldInfo.contacts[0].feature ^ 0x00ffffff])
       );
 
       const angle = 0.4;

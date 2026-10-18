@@ -975,7 +975,6 @@ export class GpuBackend {
     const consPrefix = L.cons.cSlotA;
     const consData = this.packCons;
     consData.fill(0, 0, consPrefix);
-    const consU32 = new Uint32Array(consData.buffer);
     for (let j = 0; j < joints.length; j++) {
       const f = joints[j];
       const o = L.cons.cJoint + j * JOINT_STRIDE;
@@ -1109,7 +1108,6 @@ export class GpuBackend {
 
     q.writeBuffer(this.bodyBuf, 0, bodyData);
     q.writeBuffer(this.consBuf, 0, consData, 0, consPrefix);
-    void consU32;
     q.writeBuffer(this.metaBuf, 0, metaData);
     if (preserveContactState) {
       if (
@@ -1956,7 +1954,6 @@ export class GpuBackend {
     const atom = new Uint32Array(raw, 0, L.atomU32Len);
     const meta = new Uint32Array(raw, atomBytes, L.metaU32Len);
     const cons = new Float32Array(raw, atomBytes + metaBytes, L.consF32Len);
-    const consU = new Uint32Array(raw, atomBytes + metaBytes, L.consF32Len);
 
     const n = this.numBodies;
     const colorOf = Array.from(
@@ -1984,7 +1981,7 @@ export class GpuBackend {
     const slotInfo = [];
     for (let s = 0; s < slots; s++) {
       const h = base + s * SLOT_STRIDE;
-      contactPairs.push([consU[h + 3], consU[h + 4]]);
+      contactPairs.push([cons[h + 3], cons[h + 4]]);
       const numContacts = Math.min(CONTACTS_PER_SLOT, cons[h + 1]);
       slotInfo.push({
         numContacts: cons[h + 1],
@@ -2005,7 +2002,7 @@ export class GpuBackend {
             penalty: [cons[cb + 9], cons[cb + 10], cons[cb + 11]],
             lambda: [cons[cb + 12], cons[cb + 13], cons[cb + 14]],
             sticking: cons[cb + 15] > 0.5,
-            feature: consU[cb + 16],
+            feature: cons[cb + 16],
             restitutionBias: cons[cb + 17],
           };
         }),

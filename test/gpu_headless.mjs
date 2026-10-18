@@ -902,7 +902,9 @@ if (!only || only === 'manifold') {
     backend.device.queue.writeBuffer(
       backend.consBuf,
       (oldRecord + 16) * 4,
-      new Uint32Array([oldContact.feature ^ 0x00ffffff])
+      // Feature IDs are 24-bit odd integers stored as f32 values; flipping
+      // all 24 bits yields an even ID that can match no live feature.
+      new Float32Array([oldContact.feature ^ 0x00ffffff])
     );
 
     // Rigidly rotate both bodies and their centers about the origin.

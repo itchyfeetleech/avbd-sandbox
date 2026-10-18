@@ -289,6 +289,21 @@ const { RENDER_SHADER } = await import(join(ROOT, 'src/render/renderer_webgpu.js
 scan('renderer_webgpu.js', RENDER_SHADER);
 scanGrammar('renderer_webgpu.js', RENDER_SHADER);
 
+// Integers must not round-trip through the f32 arenas as bit patterns: small
+// u32 values are subnormal f32s, which WGSL lets an implementation flush to
+// zero. Store exact float values instead (see the CONS notes in layout.js).
+{
+  const lines = SHADER_SOURCE.split('\n');
+  const roundTrip = /\b(?:CONS|BODY)\[[^\]]*\]\s*=\s*bitcast<f32>|bitcast<u32>\(\s*(?:CONS|BODY)\[/;
+  lines.forEach((line, i) => {
+    if (roundTrip.test(line)) {
+      console.log(`  gpu/shaders.js:${i + 1}  integer bit pattern stored in an f32 arena`);
+      console.log(`      ${line.trim().slice(0, 110)}`);
+      findings++;
+    }
+  });
+}
+
 // --- Host/shader agreement --------------------------------------------------
 // Both of these drift silently rather than failing loudly: an unregistered
 // entry point is simply never dispatched, and a uniform the host never writes
