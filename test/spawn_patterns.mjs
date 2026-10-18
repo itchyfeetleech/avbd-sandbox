@@ -1,9 +1,10 @@
 /**
- * Sandbox structured-spawner placement contracts.
+ * Sandbox spawner placement contracts.
  *
  * Structured recipes should honor the same drop-height control as loose
- * recipes, and they should begin without contacts even when the shipped size
- * variation or the Mixed shape recipe is selected.
+ * recipes. Every rigid recipe, structured or scattered, should begin without
+ * contacts even when the shipped size variation or the Mixed shape recipe is
+ * selected, and should start above the surface at the lowest drop height.
  */
 
 import assert from 'node:assert/strict';
@@ -12,6 +13,7 @@ import { collide, MAX_CONTACTS } from '../src/physics/collide.js';
 import { spawnPattern } from '../src/app/scenes.js';
 
 const PATTERNS = ['tower', 'wall', 'pyramid', 'grid', 'ring'];
+const SCATTERED = ['rain', 'cluster', 'funnel'];
 const COUNT = 100;
 const SEED = 17;
 
@@ -78,4 +80,40 @@ for (const shape of ['cube', 'mixed']) {
   }
 }
 
-console.log(`\n${checks}/${checks} structured-spawner checks passed.`);
+for (const shape of ['cube', 'mixed']) {
+  for (const pattern of SCATTERED) {
+    const bodies = spawned(pattern, shape, 20);
+    assert.equal(bodies.length, COUNT);
+    const overlap = firstInitialContact(bodies);
+    assert.equal(
+      overlap,
+      null,
+      `${pattern}/${shape} starts with a contact between bodies ${overlap?.join(' and ')}`
+    );
+    checks++;
+    console.log(`PASS  ${pattern}/${shape} starts contact-free`);
+  }
+}
+
+for (const pattern of [...PATTERNS, ...SCATTERED]) {
+  // Drop height 0 is the slider minimum; the ground surface is at origin z.
+  const bodies = spawned(pattern, 'mixed', 0);
+  const lowest = Math.min(...bodies.map((body) =>
+    body.positionLin[2] - (body.shape === 'sphere' ? body.radius : body.size[2] / 2)
+  ));
+  assert.ok(lowest >= -1e-12, `${pattern} starts ${(-lowest).toFixed(3)} m into the surface`);
+  checks++;
+  console.log(`PASS  ${pattern} starts above the surface at drop height 0`);
+}
+
+{
+  // The Drop tool spawns one body and expects it where it was aimed.
+  const [body] = spawnPattern(new Solver(), {
+    pattern: 'cluster', count: 1, size: 0.9, variation: 0, origin: [3, -2, 0], height: 5, seed: SEED,
+  });
+  assert.deepEqual([...body.positionLin], [3, -2, 5 + body.size[2] / 2]);
+  checks++;
+  console.log('PASS  a single dropped body lands where it was aimed');
+}
+
+console.log(`\n${checks}/${checks} spawner checks passed.`);

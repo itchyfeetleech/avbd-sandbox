@@ -29,6 +29,8 @@ check('negative counts are rejected', throwsRange({ count: -1 }));
 check('fractional counts are rejected', throwsRange({ count: 2.5 }));
 check('non-finite counts are rejected', throwsRange({ count: NaN }));
 check('non-positive sizes are rejected', throwsRange({ count: 1, size: 0 }));
+check('sizes whose mass properties are not finite are rejected',
+  throwsRange({ count: 1, size: 1e-70 }) && throwsRange({ count: 1, size: 1e110 }));
 check('variation cannot create zero-sized bodies', throwsRange({ count: 1, variation: 1 }));
 check('negative density is rejected', throwsRange({ count: 1, density: -1 }));
 check('restitution is bounded to [0, 1]', throwsRange({ count: 1, restitution: 1.01 }));
@@ -217,14 +219,14 @@ for (const count of [0, 1, 2, 3, 7, 50, 96, 2500]) {
 
 for (const count of [0, 1, 2, 49, 97, 2500]) {
   const result = inspectConnectedTopology('rope', count);
-  const strands = count === 0 ? 0 : Math.ceil(count / 48);
   const lengths = new Map();
   for (const body of result.bodies) {
     lengths.set(body.softStrand, (lengths.get(body.softStrand) || 0) + 1);
   }
   const strandLengths = [...lengths.values()];
+  const strands = strandLengths.length;
   const balanced =
-    strandLengths.length === strands &&
+    (count === 0 || strands > 0) &&
     Math.max(0, ...strandLengths) <= 48 &&
     Math.max(0, ...strandLengths) - Math.min(Infinity, ...strandLengths) <= 1;
   check(`rope count=${count} creates exactly the requested nodes`, result.bodies.length === count);
@@ -244,6 +246,32 @@ for (const count of [0, 1, 2, 49, 97, 2500]) {
       result.maxDegree <= 4 &&
       result.springs.every((spring) => spring.tearStrain === Infinity)
   );
+}
+
+// A strand or sheet taller than the drop used to start inside, or under, the
+// floor. Every node must begin clear of the surface at origin z, and a rope
+// that fits below the drop height must still hang from it.
+for (const pattern of ['rope', 'fabric']) {
+  for (const [count, size, height] of [
+    [48, 0.72, 15], [100, 0.9, 20], [1000, 0.9, 20], [2500, 0.9, 20], [60, 0.9, 0],
+  ]) {
+    const solver = new Solver();
+    const bodies = spawnPattern(solver, {
+      pattern, count, size, height, origin: [0, 0, 2], seed: 5,
+    });
+    const lowest = Math.min(...bodies.map((body) => body.positionLin[2] - body.radius));
+    check(
+      `${pattern} count=${count} size=${size} height=${height} starts clear of the surface`,
+      bodies.length === count && lowest > 2
+    );
+    if (pattern === 'rope' && height > 0) {
+      const anchors = bodies.filter((body) => body.softAnchor);
+      check(
+        `rope count=${count} height=${height} hangs from the requested height`,
+        anchors.every((body) => body.positionLin[2] === 2 + height)
+      );
+    }
+  }
 }
 
 {
