@@ -19,6 +19,9 @@ CACHE="$HERE/.cache"
 SRC="$CACHE/avbd-demo3d"
 BUILD="$CACHE/build"
 UPSTREAM="https://github.com/savant117/avbd-demo3d.git"
+# The upstream commit parity is verified against. Pinned so an upstream push
+# cannot change the result with no change here; override to try another.
+REF_COMMIT="${AVBD_REF3D_COMMIT:-7701bd427d55ca5d03ea1fdf331912ded9169f4b}"
 
 mkdir -p "$CACHE"
 
@@ -31,8 +34,10 @@ if [ ! -d "$SRC/source" ]; then
     cp -r "$AVBD_REF3D_DIR/source" "$SRC/"
     cp -f "$AVBD_REF3D_DIR/LICENSE" "$SRC/" 2>/dev/null || true
   else
-    echo "Cloning reference implementation from $UPSTREAM ..."
-    git clone -q --depth 1 "$UPSTREAM" "$SRC"
+    echo "Fetching reference implementation $UPSTREAM @ ${REF_COMMIT:0:12} ..."
+    git init -q "$SRC"
+    git -C "$SRC" fetch -q --depth 1 "$UPSTREAM" "$REF_COMMIT"
+    git -C "$SRC" checkout -q FETCH_HEAD
   fi
 fi
 

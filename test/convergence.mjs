@@ -6,7 +6,7 @@
  * iterations (ten by default), so a settled pile does not sit at the exact
  * solution — it sits wherever the budget got to. Whether the leftovers are a
  * convergence residual or a defect is the question this file answers, by
- * measuring them and then measuring them again with four times the budget.
+ * measuring them and then measuring them again at forty iterations.
  *
  * Everything is reported as a fraction of the smallest body dimension in the
  * scene, because that is what determines whether an overlap is visible: a fixed

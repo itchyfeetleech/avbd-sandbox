@@ -1,7 +1,12 @@
 name: Deploy GitHub Pages
 
+# Publishes main once CI has passed on it, so a commit that fails the suite (a
+# shader Chrome cannot compile, say) never reaches the live site. A manual run
+# deploys the chosen ref without waiting for CI.
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches:
       - main
   workflow_dispatch:
@@ -17,13 +22,23 @@ concurrency:
 
 jobs:
   deploy:
+    # A successful CI run for a push to this repository's main. The branch
+    # filter alone is not enough: a pull request from a fork whose branch is
+    # also called main reports the same head_branch.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
-      - name: Check out repository
+      - name: Check out the tested commit
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5

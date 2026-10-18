@@ -23,7 +23,7 @@ import { Rigid } from '../physics/rigid.js';
 import { Joint } from '../physics/joint.js';
 import { Spring } from '../physics/spring.js';
 import { Coloring } from '../physics/coloring.js';
-import { GpuBackend } from '../physics/gpu/backend.js';
+import { GpuBackend, compileShaderModule } from '../physics/gpu/backend.js';
 import { MAX_COLORS } from '../physics/gpu/layout.js';
 
 const PARAMS = {
@@ -188,7 +188,7 @@ async function runScene(backend, scene, postStabilize) {
   for (let s = 0; s < scene.steps; s++) {
     cpu.step();
     backend.step(gpu);
-    await backend.device.queue.onSubmittedWorkDone();
+    await backend.idle();
 
     // Coloring is topology-driven; contacts formed this step change the graph.
     // Recompute on the CPU twin and re-inject so both sides stay in lockstep.
@@ -239,9 +239,9 @@ export async function runGpuTests(existingBackend = null, progress = null) {
     // machine where the compute path is fine.
     progress?.('compiling render shaders');
     const { RENDER_SHADER } = await import('../render/renderer_webgpu.js');
-    const renderModule = backend.device.createShaderModule({ code: RENDER_SHADER });
-    const renderInfo = await renderModule.getCompilationInfo();
-    const renderErrors = renderInfo.messages.filter((m) => m.type === 'error');
+    const { errors: renderErrors } = await compileShaderModule(
+      backend.device, RENDER_SHADER, 'avbd-render'
+    );
     report.renderShader = renderErrors.length
       ? renderErrors.map((m) => `${m.lineNum}:${m.linePos} ${m.message}`)
       : 'compiles';

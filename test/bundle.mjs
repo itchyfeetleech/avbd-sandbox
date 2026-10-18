@@ -7,6 +7,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -14,7 +15,8 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const temp = await mkdtemp(join(tmpdir(), 'avbd-bundle-test-'));
-const output = join(temp, 'avbd-sandbox.html');
+// A directory that does not exist yet, as dist/ does not on a fresh clone.
+const output = join(temp, 'dist', 'avbd-sandbox.html');
 
 try {
   const originalArgv = process.argv.slice();
@@ -60,8 +62,22 @@ try {
   );
   assert.doesNotMatch(documentMarkup, /src="\.\/src\/app\/main\.js"/);
 
+  // The shell can be intact around a script that does not parse, so parse it.
+  const script = html.slice(scriptStart + '<script type="module">'.length, scriptEnd);
+  const parsed = spawnSync(process.execPath, ['--input-type=module', '--check'], {
+    input: script,
+    encoding: 'utf8',
+  });
+  assert.equal(parsed.status, 0, `the inlined bundle does not parse:\n${parsed.stderr}`);
+
+  // The bundle redistributes the project and the ported reference code.
+  for (const notice of ['Copyright (c) 2026 itchyfeetleech', 'Copyright (c) 2025 Chris Giles']) {
+    assert.ok(script.includes(notice), `the bundle omits the notice "${notice}"`);
+  }
+
   console.log(
-    'Standalone bundle preserves the document shell and inlines all runtime resources.'
+    'Standalone bundle preserves the document shell, inlines all runtime resources, ' +
+      'parses, and carries its licence notices.'
   );
 } finally {
   await rm(temp, { recursive: true, force: true });

@@ -185,4 +185,19 @@ check('WebGL expands intact triangles and opens a tear without moving particle s
   assert.ok(bodies[0].positionLin.every((value) => Math.abs(value) === 0));
 });
 
+check('WebGL draws no fabric from a topology built for another body list', () => {
+  // Switching to a scene without the sheet shortens solver.bodies before the
+  // frame's setFabricData() rebuild; setBodies() still holds the old topology.
+  const bodies = grid();
+  const renderer = Object.assign(Object.create(Renderer.prototype), {
+    fabricTopology: buildFabricTopology(bodies, completeCell(bodies)),
+    fabricData: new Float32Array(256),
+    fabricVertexCount: 6,
+    poseAlpha: 0.5,
+    gl: null,
+  });
+  renderer._updateFabricVertices(bodies.slice(0, 1));
+  assert.equal(renderer.fabricVertexCount, 0);
+});
+
 console.log(`\n${checks}/${checks} fabric renderer checks passed.`);

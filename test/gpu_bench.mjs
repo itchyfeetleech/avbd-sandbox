@@ -81,7 +81,7 @@ const initialGeneration = backend.topologyGeneration;
 
 const step = async () => {
   backend.step(solver);
-  await backend.device.queue.onSubmittedWorkDone();
+  await backend.idle();
   await new Promise((r) => setTimeout(r, 0));
 };
 

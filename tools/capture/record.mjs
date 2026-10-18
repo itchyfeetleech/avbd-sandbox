@@ -2,25 +2,26 @@
  * Record the README media.
  *
  *   node tools/capture/record.mjs [--only=hero,mega-wall] [--keep-open]
- *     [--browser=/path/to/exe] [--port=8124] [--out=docs/media]
+ *     [--headless] [--browser=/path/to/exe] [--port=8124] [--out=docs/media]
  *
  * Serves the capture page, opens a real browser at it, receives frames as they
- * are rendered, and writes PNG and GIF files. A real browser is used for the
- * same reason `tools/browsertest.mjs` does: Deno's WebGPU adapter here is a
- * software rasteriser, and these scenes are 50,000 bodies deep.
+ * are rendered, and writes PNG and GIF files. A real browser on the real GPU is
+ * the default because these scenes are 50,000 bodies deep. `--headless` uses
+ * Chrome or Chromium on SwiftShader (see tools/browser.mjs): the rig renders
+ * offscreen, so it works there, and is fast enough for the smaller scenes.
  *
  * Frames are held per shot and encoded as each shot finishes, so peak memory
  * is one animation rather than all of them.
  */
 
 import { createServer } from 'node:http';
-import { spawn, execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { dirname, join, extname } from 'node:path';
+import { dirname, join, extname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 
+import { findBrowser, isGecko, launchBrowser, closeWindowsGeckoWindows } from '../browser.mjs';
 import { encodePNG } from './png.mjs';
 import { encodeGIF } from './gif.mjs';
 import { SHOTS } from './shots.mjs';
@@ -35,7 +36,8 @@ const arg = (name, fallback) =>
 const PORT = Number(arg('port', 8124));
 const ONLY = arg('only', '');
 const KEEP = argv.includes('--keep-open');
-const OUT_DIR = join(ROOT, arg('out', join('docs', 'media')));
+const HEADLESS = argv.includes('--headless');
+const OUT_DIR = resolve(ROOT, arg('out', join('docs', 'media')));
 const TIMEOUT_MS = Number(arg('timeout', 900)) * 1000;
 const PROBE = (arg('probe', '') || '').split(',').filter(Boolean).map(Number);
 
@@ -146,80 +148,29 @@ console.log(`capture server: http://127.0.0.1:${PORT}/`);
 // Same discovery and throwaway-profile handling as tools/browsertest.mjs: a
 // fresh Gecko profile does not enable WebGPU, so the adapter would be null.
 
-const CANDIDATES = [
-  arg('browser', process.env.BROWSER),
-  '/mnt/c/Program Files/Zen Browser/zen.exe',
-  '/mnt/c/Program Files/Mozilla Firefox/firefox.exe',
-  '/mnt/c/Program Files (x86)/Mozilla Firefox/firefox.exe',
-  '/mnt/c/Program Files/Google/Chrome/Application/chrome.exe',
-  '/mnt/c/Program Files/Microsoft/Edge/Application/msedge.exe',
-].filter(Boolean);
-
-const browser = CANDIDATES.find((p) => existsSync(p));
+const { browser, looked } = findBrowser({ explicit: arg('browser', ''), headless: HEADLESS });
 if (!browser) {
-  console.error(`No browser found. Pass --browser=/path/to/exe.\nLooked in:\n  ${CANDIDATES.join('\n  ')}`);
+  console.error(`No browser found. Pass --browser=/path/to/exe.\nLooked in:\n  ${looked.join('\n  ')}`);
   process.exit(2);
-}
-const isGecko = /firefox|zen/i.test(browser);
-
-let profileArgs;
-if (isGecko) {
-  const winLocal = execFileSync('cmd.exe', ['/c', 'echo %LOCALAPPDATA%'], { encoding: 'utf8' })
-    .trim()
-    .replace(/\r/g, '');
-  const winProfile = `${winLocal}\\avbd-capture-profile`;
-  const wslProfile = '/mnt/' + winProfile[0].toLowerCase() + winProfile.slice(2).replace(/\\/g, '/');
-  mkdirSync(wslProfile, { recursive: true });
-  writeFileSync(
-    join(wslProfile, 'user.js'),
-    [
-      'user_pref("dom.webgpu.enabled", true);',
-      'user_pref("dom.webgpu.workers.enabled", true);',
-      'user_pref("gfx.webrender.all", true);',
-      'user_pref("layers.acceleration.force-enabled", true);',
-      'user_pref("browser.shell.checkDefaultBrowser", false);',
-      'user_pref("browser.aboutwelcome.enabled", false);',
-      'user_pref("browser.startup.homepage_override.mstone", "ignore");',
-      'user_pref("browser.sessionstore.resume_from_crash", false);',
-      'user_pref("datareporting.policy.dataSubmissionEnabled", false);',
-      'user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);',
-      // Capture runs for minutes with no input; do not let the tab be throttled.
-      'user_pref("dom.min_background_timeout_value", 16);',
-    ].join('\n') + '\n'
-  );
-  profileArgs = ['--no-remote', '--profile', winProfile, '--width', '900', '--height', '620'];
-} else {
-  profileArgs = [
-    '--enable-unsafe-webgpu',
-    '--enable-features=Vulkan',
-    '--no-first-run',
-    '--no-default-browser-check',
-    `--user-data-dir=${process.env.TEMP ?? '/tmp'}\\avbd-capture-profile`,
-  ];
 }
 
 // A previous run's window still holding the throwaway profile makes
 // `--no-remote --profile` exit silently, and the capture then times out with
 // nothing written and nothing logged. Close it first.
-function closeStaleWindows() {
-  if (!isGecko || !browser.startsWith('/mnt/c/')) return;
-  try {
-    execFileSync('powershell.exe', [
-      '-NoProfile', '-Command',
-      'Get-Process zen,firefox -ErrorAction SilentlyContinue | ' +
-      "Where-Object { $_.MainWindowTitle -like 'AVBD CAPTURE*' } | " +
-      'ForEach-Object { $_.CloseMainWindow() | Out-Null }; Start-Sleep -Milliseconds 900',
-    ], { stdio: 'ignore' });
-  } catch { /* nothing to close */ }
-}
-closeStaleWindows();
+if (isGecko(browser) && browser.startsWith('/mnt/c/')) closeWindowsGeckoWindows(['AVBD CAPTURE*']);
 
 const target = `http://127.0.0.1:${PORT}/tools/capture/page.html` + (ONLY ? `?only=${ONLY}` : '');
-console.log(`browser: ${browser}`);
+console.log(`browser: ${browser}${HEADLESS ? ' (headless, SwiftShader)' : ''}`);
 console.log(`shots:   ${wanted.join(', ')}\n`);
 
-const child = spawn(browser, [...profileArgs, target], { stdio: 'ignore' });
-child.on('error', (err) => {
+const launched = launchBrowser(browser, target, {
+  headless: HEADLESS,
+  profileName: 'avbd-capture-profile',
+  windowTitles: ['AVBD CAPTURE*'],
+  // Capture runs for minutes with no input; do not let the tab be throttled.
+  extraGeckoPrefs: ['user_pref("dom.min_background_timeout_value", 16);'],
+});
+launched.child.on('error', (err) => {
   console.error(`Could not launch the browser: ${err.message}`);
   process.exit(2);
 });
@@ -233,23 +184,7 @@ while (written.length < wanted.length && !failure && Date.now() - started < TIME
 }
 if (!finished && written.length === wanted.length) finished = true;
 
-function closeBrowser() {
-  if (KEEP) return;
-  try {
-    if (isGecko && browser.startsWith('/mnt/c/')) {
-      execFileSync('powershell.exe', [
-        '-NoProfile', '-Command',
-        'Get-Process zen,firefox -ErrorAction SilentlyContinue | ' +
-        "Where-Object { $_.MainWindowTitle -like 'AVBD CAPTURE*' } | " +
-        'ForEach-Object { $_.CloseMainWindow() | Out-Null }',
-      ], { stdio: 'ignore' });
-    } else {
-      child.kill();
-    }
-  } catch { /* already gone */ }
-}
-
-closeBrowser();
+if (!KEEP) launched.close();
 server.close();
 
 if (failure) {

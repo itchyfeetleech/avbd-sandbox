@@ -5,35 +5,55 @@
 ## The suite
 
 ```bash
+npm test                              # every Node-only check below, summarized
+npm run test:quick                    # ...without the two one-minute suites
+```
+
+```bash
 bash test/parity/build_reference.sh   # fetch + compile the authors' solver
 node test/parity/run_parity.mjs       # diff full trajectories, shipped and demo configs
 node test/parity/run_parity.mjs --attribute   # ...and which feature causes which divergence
 node test/analytic.mjs                # closed-form physics oracles
-node test/gym.mjs                     # score every variant over the zoo, with oracles
 node test/convergence.mjs             # settled penetration and energy residuals
 node test/pacing.mjs                  # fixed-timestep loop at every refresh rate
 node test/smoke.mjs                   # every scene stays finite and stable
 node test/spheres.mjs                 # sphere mass, curved contacts and settling
-node test/soft_objects.mjs            # fabric/rope topology, scaling and clearing
-node test/spawn_patterns.mjs          # contact-free structured spawn recipes
+node test/soft_objects.mjs            # fabric/rope topology, scaling, clearance, clearing
+node test/spawn_patterns.mjs          # contact-free spawn recipes, above the surface
 node test/fabric_controls.mjs         # fabric pin/tear UI-to-spawner contract
 node test/fabric_render.mjs           # filled topology, node hiding and visual tears
 node test/render_shapes.mjs           # sphere meshes and split-draw contracts
 node test/killbox.mjs                 # out-of-world culling rules
-node test/manifold_width.mjs          # contacts-per-manifold distribution
 node test/gpu_topology_contract.mjs   # no-step GPU topology flush contract
 node test/bundle.mjs                  # standalone standards-mode release artifact
-node tools/gputest.mjs                # GPU backend under Deno (software adapter)
+node test/serve.mjs                   # dev server confinement and report endpoint
+node tools/gputest.mjs                # GPU backend under Deno (wgpu, Naga)
+node tools/browsertest.mjs --headless # GPU backend in headless Chrome (Dawn, Tint)
 node tools/browsertest.mjs            # GPU backend in a real browser, real driver
 node tools/check-syntax.mjs           # parse all sources as ES modules
 node tools/check-wgsl.mjs             # WGSL lint + host/shader agreement
 ```
 
-Apart from the parity reference build, the Deno GPU run and the real-browser driver
-run, every check needs only Node.
+Measurements rather than checks: they print numbers and always exit 0.
 
-`tools/gputest.mjs` needs a [Deno](https://deno.land) runtime, which embeds Dawn; it
-finds one on `PATH`, at `~/.deno/bin/deno`, or at `$DENO`.
+```bash
+node test/gym.mjs                     # score every variant over the zoo, with oracles
+node test/refine.mjs                  # timestep refinement per solver variant
+node test/manifold_width.mjs          # contacts-per-manifold distribution
+```
+
+Apart from the parity reference build, the Deno GPU run and the browser runs, every
+check needs only Node. CI (`.github/workflows/ci.yml`) runs all of them except the
+real-driver run on every push, and the Pages deployment waits for it: a commit on `main`
+goes live only once CI has passed on it.
+
+`tools/gputest.mjs` needs a [Deno](https://deno.land) runtime, whose WebGPU is wgpu; it
+finds one on `PATH`, at `~/.deno/bin/deno`, or at `$DENO`. On a machine without a Vulkan
+driver, install Mesa's lavapipe or pass `--swiftshader` to use the SwiftShader device
+that Chrome ships.
+
+The parity build fetches the authors' repository at a pinned commit; set
+`AVBD_REF3D_COMMIT` to try another, or `AVBD_REF3D_DIR` to use a local copy.
 
 ## Parity against the authors' implementation
 
@@ -133,8 +153,8 @@ transport allow the rest offset to be selected independently.
 ## Convergence and pacing
 
 `test/convergence.mjs` measures what the iteration budget leaves behind, and confirms
-it *is* a budget: four times the iterations reduces mean penetration 61× on the pyramid
-and 14× on the card tower.
+it *is* a budget: raising it to 40 iterations reduces mean penetration 21.7× on the
+pyramid, which ships at 16, and 13.8× on the card tower, which ships at the default 10.
 
 `test/pacing.mjs` characterises the fixed-timestep loop across seven refresh rates and
 four timesteps, asserting that the simulation advances at real time and that the
@@ -142,33 +162,44 @@ rendered instant stays exactly one step behind it.
 
 ## The GPU backend
 
-`node tools/gputest.mjs` runs the backend headlessly under Deno, in four layers:
+`node tools/gputest.mjs` runs the backend headlessly under Deno, in three layers,
+cheapest first:
 
 1. every WGSL entry point compiles and every pipeline is creatable
-2. bodies land on the ground instead of tunnelling through it — including across the
-   CPU-to-GPU handover and a mid-run repack
-3. the graph colouring is a valid partition and, at its fixed point, conflict-free
-4. the whole thing agrees with the CPU engine
+2. the backend behaves: bodies land on the ground instead of tunnelling through it,
+   including across the CPU-to-GPU handover and a mid-run repack; the graph colouring
+   is a valid partition and, at its fixed point, conflict-free; wide manifolds, fabric
+   tearing, joint fracture, friction, restitution and contact offsets each behave as
+   specified
+3. the whole thing agrees with the CPU engine
 
 The same comparison runs in the browser — click **Verify GPU vs CPU**, or load
 `/?gputest=1` for a run that POSTs its report to `test/gpu-report.json`. It replays the
 GPU's color order on the CPU (legitimate, since bodies within one color share no forces,
 so sequential and parallel execution of a color are the same computation) and compares
-full state. Typical agreement is `1e-6`–`1e-8`, i.e. f32 rounding.
+every dynamic body's position and orientation. Typical agreement is `1e-6`–`1e-8`, i.e.
+f32 rounding.
 
-### Why a real browser too
+### Why a browser too
 
-`tools/browsertest.mjs` runs the **same assertions** (`src/app/gpuchecks.js`) on the
-actual driver, unattended: it starts the server, launches a browser at `/?selftest=1`
-with a throwaway profile, and reads the verdict the page POSTs back.
+`tools/browsertest.mjs` runs the **same assertions** (`src/app/gpuchecks.js`) in a
+browser, unattended: it starts the server, launches a browser at `/?selftest=1` with a
+throwaway profile, and reads the verdict the page POSTs back. `--page=gputest` runs the
+GPU-vs-CPU comparison the same way.
 
-This is not redundant with the Deno run. That adapter is a software rasteriser, so it is
-single threaded, IEEE-exact and has no bandwidth wall, and an entire class of fault is
-invisible to it. A regression that passed every software check and CPU parity, and broke
-instantly on hardware, is what this exists for.
+Two WebGPU implementations, two WGSL compilers. Deno's WebGPU is wgpu, which compiles
+with Naga; Chrome's is Dawn, which compiles with Tint, and the two disagree on what is
+valid. Naga accepted `a * k ^ b * k`, which WGSL forbids; Tint rejected the whole module,
+and for as long as that went unnoticed the GPU backend could not start in Chrome or Edge.
+`node tools/browsertest.mjs --headless` runs Chrome or Chromium with WebGPU on
+SwiftShader, needs no GPU or display, and is what CI runs.
 
-Headless is deliberately not used: headless Firefox exposes `navigator.gpu` but returns
-a null adapter, so a real window opens briefly.
+Neither replaces the real driver. Both software devices are single threaded, IEEE-exact
+and have no bandwidth wall, so an entire class of fault is invisible to them. A
+regression that passed every software check and CPU parity, and broke instantly on
+hardware, is what the windowed run exists for. It opens a real window briefly: headless
+Firefox exposes `navigator.gpu` but returns a null adapter, and a SwiftShader device is
+lost as soon as it presents to a canvas.
 
 ## Profiling
 
@@ -176,4 +207,6 @@ Ticking **Profile GPU passes** times each compute pass on the GPU timeline via
 `timestamp-query`, and reads the contact counters every step rather than every sixth, so
 the breakdown and the counts beside it describe the same step.
 
-`test/gpu_bench.mjs --scene=avalanche --iterations=4` gives a per-pass A/B profile.
+`test/gpu_bench.mjs --scene=avalanche --iterations=4` gives a per-pass A/B profile. It
+needs WebGPU, so it runs under Deno with the same flags as the headless suite (see its
+header); on a software device it measures arithmetic, not bandwidth.

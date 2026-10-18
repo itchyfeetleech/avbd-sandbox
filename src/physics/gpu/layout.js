@@ -104,8 +104,8 @@ export const BS_EARLIER_REACH = 14;
 // [12..14] penaltyLin  [15..17] penaltyAng
 // [18..20] lambdaLin   [21..23] lambdaAng
 // [24] torqueArm   [25] hardLin (0/1)   [26] hardAng (0/1)
-// [27] clampLin = min(stiffLin, PENALTY_MAX)
-// [28] clampAng = min(stiffAng, PENALTY_MAX)
+// [27] stiffLin    [28] stiffAng   (material stiffness, finite in f32;
+//                                    the shaders also cap at GU.penaltyMax)
 // [29] fracture²   [30] broken (0/1)
 export const JOINT_STRIDE = 40;
 
@@ -117,15 +117,20 @@ export const SPRING_STRIDE = 12;
 
 // ---- contact manifold slot (f32), stride 88 ----
 // header (16):
-//   [0] pairKey (bitcast u32)  [1] numContacts (this slot)
+//   [0] reserved               [1] numContacts (this slot)
 //   [2] static friction
-//   [3] bodyA (bitcast u32)    [4] bodyB (bitcast u32)
-//   [5] chainLen (plain f32, NOT bitcast — see narrowphase) — consecutive
-//       slots holding this pair
+//   [3] bodyA                  [4] bodyB
+//   [5] chainLen — consecutive slots holding this pair
 //   [6..14] basis rows (n, t1, t2)  [15] dynamic friction
 // contact c at 16 + c*18:
 //   [0..2] rA  [3..5] rB  [6..8] C0  [9..11] penalty  [12..14] lambda
-//   [15] stick  [16] feature (bitcast u32)  [17] one-frame restitution bias
+//   [15] stick  [16] 24-bit feature ID  [17] one-frame restitution bias
+//
+// Integer fields (counts, body indices, chain length, feature ID) are stored as
+// exact f32 values and read back with u32(), never bitcast: every u32 below
+// 2^23 is a subnormal f32 bit pattern, which WGSL lets an implementation flush
+// to zero. A flushed body index retargets a contact at body 0; a flushed chain
+// length once disabled warm starting. f32 holds every integer up to 2^24.
 export const SLOT_HEADER = 16;
 export const CONTACT_STRIDE = 18;
 export const SLOT_STRIDE = SLOT_HEADER + CONTACTS_PER_SLOT * CONTACT_STRIDE;

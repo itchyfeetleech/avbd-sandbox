@@ -275,7 +275,9 @@ fn slotNewBase() -> u32 {
 }
 
 fn contactHash(idA: u32, idB: u32) -> u32 {
-  var h = idA * 0x9e3779b9u ^ idB * 0x85ebca6bu;
+  // WGSL forbids mixing bitwise and arithmetic operators without parentheses.
+  // Naga accepts the unparenthesized form; Tint (Chrome) rejects the module.
+  var h = (idA * 0x9e3779b9u) ^ (idB * 0x85ebca6bu);
   h = (h ^ (h >> 16u)) * 0x7feb352du;
   h = (h ^ (h >> 15u)) * 0x846ca68bu;
   return h ^ (h >> 16u);
@@ -558,15 +560,19 @@ fn supportPoint(box: ptr<function, OBB>, dir: vec3f) -> vec3f {
  * edges); lineage records which incident corners and reference clipping
  * planes produced the point. Unlike polygon output position, both survive a
  * cyclic reorder of the clipped polygon.
+ *
+ * The ID keeps 24 bits so the f32 contact record can hold it as an exact
+ * float value (see the CONS layout notes). It is only ever compared within one
+ * pair's previous manifold, and a box match is also gated geometrically.
  */
 fn featureHash(context: u32, lineage: u32) -> u32 {
-  var h = context * 0x9e3779b9u ^ lineage * 0x85ebca6bu;
+  var h = (context * 0x9e3779b9u) ^ (lineage * 0x85ebca6bu);
   h = h ^ (h >> 16u);
   h = h * 0x7feb352du;
   h = h ^ (h >> 15u);
   h = h * 0x846ca68bu;
   h = h ^ (h >> 16u);
-  return h | 1u;
+  return (h >> 8u) | 1u;
 }
 
 fn clipAgainstPlane(
@@ -1130,11 +1136,12 @@ fn narrowphase(@builtin(global_invocation_id) gid: vec3u) {
   let restitution = max(bodyRestitution(ia), bodyRestitution(ib));
   for (var s = 0u; s < chain; s = s + 1u) {
     let sh = slotNewBase() + (slot + s) * SLOT_STRIDE;
-    CONS[sh] = bitcast<f32>(indexKey);
+    // Integers are stored as exact float values, never bitcast: see the CONS
+    // layout notes. Body indices are below 2^16, well inside f32's 2^24.
     CONS[sh + 1u] = f32(min(CPS, kept - s * CPS));
     CONS[sh + 2u] = staticFriction;
-    CONS[sh + 3u] = bitcast<f32>(ia);
-    CONS[sh + 4u] = bitcast<f32>(ib);
+    CONS[sh + 3u] = f32(ia);
+    CONS[sh + 4u] = f32(ib);
     CONS[sh + 5u] = f32(chain);
     CONS[sh + 6u] = sat.basisN.x; CONS[sh + 7u] = sat.basisN.y; CONS[sh + 8u] = sat.basisN.z;
     CONS[sh + 9u] = sat.basisT1.x; CONS[sh + 10u] = sat.basisT1.y; CONS[sh + 11u] = sat.basisT1.z;
@@ -1218,8 +1225,7 @@ fn narrowphase(@builtin(global_invocation_id) gid: vec3u) {
           if ((oldUsed & oldBit) != 0u) { continue; }
 
           let ob = osb + SLOT_HEADER + o * CONTACT_STRIDE;
-          let sameFeature =
-            bitcast<u32>(CONS[ob + 16u]) == sat.feature[c];
+          let sameFeature = u32(CONS[ob + 16u]) == sat.feature[c];
           // A sphere produces one analytic point, and its signed OBB-region
           // feature (or sphere-sphere pair feature) is stable by construction.
           // Its local pole moves by r·ω·dt while rolling, which can legitimately
@@ -1356,7 +1362,7 @@ fn narrowphase(@builtin(global_invocation_id) gid: vec3u) {
     CONS[cb + 9u] = penalty.x; CONS[cb + 10u] = penalty.y; CONS[cb + 11u] = penalty.z;
     CONS[cb + 12u] = lambda.x; CONS[cb + 13u] = lambda.y; CONS[cb + 14u] = lambda.z;
     CONS[cb + 15u] = stick;
-    CONS[cb + 16u] = bitcast<f32>(sat.feature[c]);
+    CONS[cb + 16u] = f32(sat.feature[c]);
     CONS[cb + 17u] = restitutionBias;
   }
 
@@ -1427,12 +1433,12 @@ fn prepare_joints(@builtin(global_invocation_id) gid: vec3u) {
   CONS[jb + 18u] = lamL.x; CONS[jb + 19u] = lamL.y; CONS[jb + 20u] = lamL.z;
   CONS[jb + 21u] = lamA.x; CONS[jb + 22u] = lamA.y; CONS[jb + 23u] = lamA.z;
 
-  let clampL = CONS[jb + 27u];
-  let clampA = CONS[jb + 28u];
+  let stiffL = CONS[jb + 27u];
+  let stiffA = CONS[jb + 28u];
   var penL = vec3f(CONS[jb + 12u], CONS[jb + 13u], CONS[jb + 14u]);
   var penA = vec3f(CONS[jb + 15u], CONS[jb + 16u], CONS[jb + 17u]);
-  penL = min(clamp(penL * GU.gamma, vec3f(GU.penaltyMin), vec3f(GU.penaltyMax)), vec3f(clampL));
-  penA = min(clamp(penA * GU.gamma, vec3f(GU.penaltyMin), vec3f(GU.penaltyMax)), vec3f(clampA));
+  penL = min(clamp(penL * GU.gamma, vec3f(GU.penaltyMin), vec3f(GU.penaltyMax)), vec3f(stiffL));
+  penA = min(clamp(penA * GU.gamma, vec3f(GU.penaltyMin), vec3f(GU.penaltyMax)), vec3f(stiffA));
   CONS[jb + 12u] = penL.x; CONS[jb + 13u] = penL.y; CONS[jb + 14u] = penL.z;
   CONS[jb + 15u] = penA.x; CONS[jb + 16u] = penA.y; CONS[jb + 17u] = penA.z;
 }
@@ -1571,7 +1577,7 @@ fn neighborMask(i: u32, srcBase: u32) -> u32 {
     let side = META[GU.mAdjEntries + e * 3u + 2u];
     let sb = slotNewBase() + slot * SLOT_STRIDE;
     var other: u32;
-    if (side == 0u) { other = bitcast<u32>(CONS[sb + 4u]); } else { other = bitcast<u32>(CONS[sb + 3u]); }
+    if (side == 0u) { other = u32(CONS[sb + 4u]); } else { other = u32(CONS[sb + 3u]); }
     if (other < i) {
       let c = atomicLoad(&ATOM[srcBase + other]);
       if (c < 32u) { used = used | (1u << c); }
@@ -1722,8 +1728,8 @@ fn loadManifold(sb: u32) -> ManifoldCtx {
   m.num = min(u32(CONS[sb + 1u]), CPS);
   m.staticFriction = CONS[sb + 2u];
   m.dynamicFriction = CONS[sb + 15u];
-  let ia = bitcast<u32>(CONS[sb + 3u]);
-  let ib = bitcast<u32>(CONS[sb + 4u]);
+  let ia = u32(CONS[sb + 3u]);
+  let ib = u32(CONS[sb + 4u]);
   m.b0 = vec3f(CONS[sb + 6u], CONS[sb + 7u], CONS[sb + 8u]);
   m.b1 = vec3f(CONS[sb + 9u], CONS[sb + 10u], CONS[sb + 11u]);
   m.b2 = vec3f(CONS[sb + 12u], CONS[sb + 13u], CONS[sb + 14u]);
@@ -2266,7 +2272,8 @@ fn dual_joints(@builtin(global_invocation_id) gid: vec3u) {
       CONS[jb + 18u] = lamL.x; CONS[jb + 19u] = lamL.y; CONS[jb + 20u] = lamL.z;
       statMaxF32(${STAT_MAX_LAMBDA}u, length(lamL));
     }
-    penL = min(penL + abs(C) * GU.betaLin, vec3f(CONS[jb + 27u]));
+    // k = min(k*, k + β|C|, k_max)   (Equations 12 and 16)
+    penL = min(penL + abs(C) * GU.betaLin, vec3f(min(CONS[jb + 27u], GU.penaltyMax)));
     CONS[jb + 12u] = penL.x; CONS[jb + 13u] = penL.y; CONS[jb + 14u] = penL.z;
     statMaxF32(${STAT_MAX_PEN}u, length(C));
     statMaxF32(${STAT_MAX_PENALTY}u, max(penL.x, max(penL.y, penL.z)));
@@ -2281,7 +2288,7 @@ fn dual_joints(@builtin(global_invocation_id) gid: vec3u) {
       let lamA = penA * C + vec3f(CONS[jb + 21u], CONS[jb + 22u], CONS[jb + 23u]);
       CONS[jb + 21u] = lamA.x; CONS[jb + 22u] = lamA.y; CONS[jb + 23u] = lamA.z;
     }
-    penA = min(penA + abs(C) * GU.betaAng, vec3f(CONS[jb + 28u]));
+    penA = min(penA + abs(C) * GU.betaAng, vec3f(min(CONS[jb + 28u], GU.penaltyMax)));
     CONS[jb + 15u] = penA.x; CONS[jb + 16u] = penA.y; CONS[jb + 17u] = penA.z;
   }
 

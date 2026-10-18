@@ -14,6 +14,7 @@
   <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT licence">
   <img src="https://img.shields.io/badge/backends-WebGPU%20%2B%20CPU%20f64-8957e5?style=flat-square" alt="WebGPU and CPU f64 backends">
   <img src="https://img.shields.io/badge/dependencies-none-555?style=flat-square" alt="No dependencies">
+  <a href="https://github.com/itchyfeetleech/avbd-sandbox/actions/workflows/ci.yml"><img src="https://github.com/itchyfeetleech/avbd-sandbox/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
   <a href="https://github.com/itchyfeetleech/avbd-sandbox/actions/workflows/pages.yml"><img src="https://github.com/itchyfeetleech/avbd-sandbox/actions/workflows/pages.yml/badge.svg" alt="Pages deploy status"></a>
 </p>
 
@@ -74,6 +75,9 @@ node tools/bundle.mjs
 # writes dist/avbd-sandbox.html
 ```
 
+`npm test` runs the checks that need only Node; [Verification](docs/verification.md)
+covers the rest, including the GPU runs that CI makes in headless Chrome and Deno.
+
 ## Using the sandbox
 
 | Panel | What it holds |
@@ -83,11 +87,13 @@ node tools/bundle.mjs
 | **Lab** | CPU or WebGPU engine, solver fidelity, a GPU-against-CPU cross-check, profiling, world-safety controls |
 
 The toolbar provides **Grab**, **Drop**, **Throw** and **Erase**. Drag empty space to
-orbit, right-drag to pan, scroll or pinch to zoom; the same tools work with touch.
+orbit, right-drag or drag with two fingers to pan, scroll or pinch to zoom; the same tools
+work with touch.
 
 <kbd>1</kbd>–<kbd>4</kbd> select tools, <kbd>Space</kbd> pauses, <kbd>.</kbd> steps,
 <kbd>R</kbd> restarts, <kbd>Z</kbd> undoes an add, <kbd>F</kbd> fires,
-<kbd>Home</kbd> frames the scene, <kbd>H</kbd> hides the controls, <kbd>/</kbd> opens help.
+<kbd>Home</kbd> frames the scene, <kbd>H</kbd> hides the controls, <kbd>?</kbd> opens help,
+and the arrow keys and <kbd>+</kbd>/<kbd>−</kbd> move the camera.
 
 ## Two backends, one scene graph
 

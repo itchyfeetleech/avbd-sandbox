@@ -9,11 +9,12 @@
  *
  * The paper does an incremental greedy coloring in a parallel Jacobi fashion
  * on the GPU and tolerates rare conflicts by double-buffering (degrading those
- * bodies to a Jacobi update). Here the coloring runs on the CPU — it is a tiny
- * O(E) pass over data that lives CPU-side anyway (the force list built during
- * collision detection) — and sequential greedy coloring is *exactly*
- * conflict-free, so the GPU passes need no double buffer at all: within one
- * color no two connected bodies are ever written in the same dispatch.
+ * bodies to a Jacobi update). The GPU backend does exactly that; see
+ * `JACOBI_ITERS` in gpu/layout.js. This is the verification counterpart: a
+ * sequential greedy coloring on the CPU, an O(E) pass over the force list,
+ * which is *exactly* conflict-free. The GPU-vs-CPU harness (app/gputest.js)
+ * uploads it in place of the GPU's own colouring, so within one color no two
+ * connected bodies are written in the same dispatch.
  *
  * Determinism matters here: given the same scene, the same coloring comes out,
  * which is what lets the CPU engine replay the GPU's exact update order for

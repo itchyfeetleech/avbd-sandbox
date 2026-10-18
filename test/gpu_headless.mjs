@@ -4,14 +4,17 @@
  * The GPU pipeline used to be testable only inside a browser, which meant WGSL
  * changes shipped on inspection alone — a compile error or a wrong buffer index
  * showed up as boxes falling through the floor, and nowhere earlier. Deno
- * embeds Dawn, and Vulkan on this machine resolves to lavapipe, so the whole
- * compute pipeline runs here with no browser and no GPU. It is slow (software
- * rasteriser) but it is exact, which is the property that matters.
+ * implements WebGPU on wgpu, so with a software Vulkan device (lavapipe or
+ * SwiftShader) the whole compute pipeline runs with no browser and no GPU. It
+ * is slow but exact, which is the property that matters.
+ *
+ * wgpu compiles WGSL with Naga, which accepts some programs Chrome's Tint
+ * rejects, so this run does not replace `tools/browsertest.mjs --headless`.
  *
  *   deno run --allow-read --allow-env --allow-ffi --unstable-webgpu \
  *     test/gpu_headless.mjs
  *
- * or just: node tools/gputest.mjs      (finds Deno and forwards to it)
+ * or just: node tools/gputest.mjs [--swiftshader]   (finds Deno, forwards)
  *
  * Three layers, cheapest first, so a failure reports at the level it happened:
  *
@@ -24,7 +27,9 @@ import { Solver } from '../src/physics/solver.js';
 import { Rigid } from '../src/physics/rigid.js';
 import { Joint } from '../src/physics/joint.js';
 import { Spring } from '../src/physics/spring.js';
-import { GpuBackend, KERNELS, PASS_NAMES } from '../src/physics/gpu/backend.js';
+import {
+  GpuBackend, KERNELS, PASS_NAMES, compileShaderModule,
+} from '../src/physics/gpu/backend.js';
 import { spawnPattern } from '../src/app/scenes.js';
 import {
   BODY_SECTIONS, MAX_COLORS, JACOBI_ITERS, MAX_CONTACTS_PER_MANIFOLD,
@@ -40,6 +45,15 @@ const CONTACTS_PER_SLOT = (SLOT_STRIDE - SLOT_HEADER) / CONTACT_STRIDE;
 const MAX_CHAIN = Math.ceil(MAX_CONTACTS_PER_MANIFOLD / CONTACTS_PER_SLOT);
 
 const only = (globalThis.Deno?.args ?? []).find((a) => a.startsWith('--only='))?.slice(7);
+const SECTIONS = [
+  'sanity', 'broadphase', 'spheres', 'fabric', 'chain', 'warmstart', 'manifold', 'lifecycle',
+  'topology', 'colouring', 'friction', 'materials', 'offsets', 'profile', 'parity',
+];
+if (only && !SECTIONS.includes(only)) {
+  // A typo would otherwise run only the compile checks and report success.
+  console.log(`Unknown --only=${only}; expected one of ${SECTIONS.join(', ')}.`);
+  globalThis.Deno?.exit(2);
+}
 
 let failures = 0;
 function check(name, ok, detail = '') {
@@ -49,7 +63,8 @@ function check(name, ok, detail = '') {
 
 if (typeof navigator === 'undefined' || !navigator.gpu) {
   console.log('SKIP  no WebGPU in this runtime — run under Deno with --unstable-webgpu');
-  globalThis.Deno?.exit(0);
+  // In CI a missing WebGPU means a misconfigured job, not a pass.
+  globalThis.Deno?.exit(globalThis.Deno?.env.get('CI') ? 1 : 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -61,9 +76,7 @@ await backend.initDevice();
 console.log(`adapter: ${backend.adapterInfo}\n`);
 
 {
-  const module = backend.device.createShaderModule({ code: SHADER_SOURCE });
-  const info = await module.getCompilationInfo();
-  const errors = info.messages.filter((m) => m.type === 'error');
+  const { errors } = await compileShaderModule(backend.device, SHADER_SOURCE);
   check(
     'the compute module compiles',
     errors.length === 0,
@@ -88,9 +101,7 @@ check(
   // nothing here imported it. `tools/check-wgsl.mjs` is a lint over the source
   // text, not a compile, so it cannot stand in for this.
   const { RENDER_SHADER } = await import('../src/render/renderer_webgpu.js');
-  const module = backend.device.createShaderModule({ code: RENDER_SHADER });
-  const info = await module.getCompilationInfo();
-  const errors = info.messages.filter((m) => m.type === 'error');
+  const { errors } = await compileShaderModule(backend.device, RENDER_SHADER);
   check(
     'the render module compiles',
     errors.length === 0,
@@ -117,7 +128,7 @@ async function runOnGpu(build, steps) {
   backend.topologyDirty = true;
   backend.pack(solver);
   for (let i = 0; i < steps; i++) backend.step(solver);
-  await backend.device.queue.onSubmittedWorkDone();
+  await backend.idle();
 
   const { data, layout } = await backend.readState();
   return solver.bodies.map((b, i) => ({
@@ -199,6 +210,41 @@ if (!only || only === 'sanity') {
       `${sunk.length} of ${dyn.length} bodies below z = 0.2`
     );
   }
+
+  {
+    // Every dispatch reads its own uniform slot, one per (iteration, colour).
+    // The slot buffer used to be a fixed 4096 entries, so a long enough solve
+    // threw in the middle of encoding. Growing it replaces the buffer while
+    // earlier steps may still be in flight, so grow it mid-run.
+    const solver = new Solver();
+    solver.defaultParams();
+    solver.iterations = 10;
+    GROUND(solver);
+    new Rigid(solver, [1, 1, 1], 1, 0.5, [0, 0, 0.5]);
+    backend.topologyDirty = true;
+    backend.pack(solver);
+    const slotsBefore = backend.maxPassSlots;
+    let thrown = null;
+    backend.device.pushErrorScope?.('validation');
+    try {
+      for (let i = 0; i < 4; i++) backend.step(solver);
+      // Enough to overflow even at the fewest colours a step encodes (three).
+      solver.iterations = Math.ceil(slotsBefore / 4) + 1;
+      for (let i = 0; i < 4; i++) backend.step(solver);
+    } catch (e) {
+      thrown = e;
+    }
+    const gpuError = await backend.device.popErrorScope?.();
+    await backend.idle();
+    const { data, layout } = await backend.readState();
+    const z = data[layout.body.bPos + 4 + 2];
+    check(
+      'a solve longer than the uniform-slot budget grows it instead of throwing',
+      !thrown && !gpuError && backend.maxPassSlots > slotsBefore && z > 0.35 && z < 0.65,
+      `${thrown?.message ?? gpuError?.message ?? 'no error'}; ` +
+        `slots ${slotsBefore} -> ${backend.maxPassSlots}; resting z = ${z}`
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -223,7 +269,7 @@ if (!only || only === 'broadphase') {
   backend.topologyDirty = true;
   backend.pack(solver);
   backend.step(solver);
-  await backend.device.queue.onSubmittedWorkDone();
+  await backend.idle();
   const { counters } = await backend.readState();
 
   check(
@@ -249,7 +295,7 @@ if (!only || only === 'broadphase') {
     }
     backend.topologyDirty = true;
     backend.pack(manySizes);
-    await backend.device.queue.onSubmittedWorkDone();
+    await backend.idle();
     check(
       'every oversized body fits the complete grid escape list',
       backend.largeCount === 300,
@@ -330,7 +376,7 @@ if (!only || only === 'spheres') {
     backend.topologyDirty = true;
     backend.pack(solver);
     for (let i = 0; i < 180; i++) backend.step(solver);
-    await backend.device.queue.onSubmittedWorkDone();
+    await backend.idle();
     const state = await backend.readState();
     const z = state.data[state.layout.body.bPos + 4 + 2];
     const vx = state.data[state.layout.body.bVel + 4];
@@ -363,7 +409,7 @@ if (!only || only === 'spheres') {
     backend.topologyDirty = true;
     backend.pack(solver);
     backend.step(solver);
-    await backend.device.queue.onSubmittedWorkDone();
+    await backend.idle();
     return (await backend.readState()).counters.contacts;
   }
 
@@ -387,7 +433,7 @@ if (!only || only === 'spheres') {
     backend.topologyDirty = true;
     backend.pack(solver);
     backend.step(solver);
-    await backend.device.queue.onSubmittedWorkDone();
+    await backend.idle();
     const info = await backend.readColoring();
     return { solver, info, contact: info.slotInfo.find((slot) => slot.numContacts > 0) };
   }
@@ -420,7 +466,7 @@ if (!only || only === 'spheres') {
     backend.topologyDirty = true;
     backend.pack(solver);
     backend.step(solver);
-    await backend.device.queue.onSubmittedWorkDone();
+    await backend.idle();
     const info = await backend.readColoring();
     const contact = info.slotInfo.find((slot) => slot.numContacts > 0);
     check(
@@ -481,7 +527,7 @@ if (!only || only === 'spheres') {
     backend.topologyDirty = true;
     backend.pack(solver);
     backend.step(solver);
-    await backend.device.queue.onSubmittedWorkDone();
+    await backend.idle();
 
     const before = await backend.readColoring();
     const oldSlot = before.slotInfo.findIndex((slot) => slot.numContacts > 0);
@@ -513,7 +559,7 @@ if (!only || only === 'spheres') {
       new Float32Array([0.99 * Math.cos(angle), 0.99 * Math.sin(angle), 0, 0])
     );
     backend.step(solver);
-    await backend.device.queue.onSubmittedWorkDone();
+    await backend.idle();
 
     const after = await backend.readColoring();
     const newInfo = after.slotInfo.find((slot) => slot.numContacts > 0);
@@ -541,7 +587,7 @@ if (!only || only === 'spheres') {
 }
 
 // ---------------------------------------------------------------------------
-// 2b. GPU-owned fabric tearing
+// 2c. GPU-owned fabric tearing
 // ---------------------------------------------------------------------------
 
 if (!only || only === 'fabric') {
@@ -565,7 +611,7 @@ if (!only || only === 'fabric') {
     backend.topologyDirty = true;
     backend.pack(solver);
     backend.step(solver);
-    await backend.device.queue.onSubmittedWorkDone();
+    await backend.idle();
     const states = await backend.readSpringStates();
     const targetState = states[backend.springIndex.get(target)];
 
@@ -594,7 +640,7 @@ if (!only || only === 'fabric') {
     new Spring(solver, extraA, extraB, [0, 0, 0], [0, 0, 0], 10, 1);
     backend.topologyDirty = true;
     backend.pack(solver);
-    await backend.device.queue.onSubmittedWorkDone();
+    await backend.idle();
     const repacked = await backend.readSpringStates();
     const shiftedIndex = backend.springIndex.get(target);
     check(
@@ -635,7 +681,7 @@ if (!only || only === 'fabric') {
     backend.pack(solver);
     backend.step(solver); // prepare tears; broad phase still saw it connected
     backend.step(solver); // broken joined-pair entry now admits collision
-    await backend.device.queue.onSubmittedWorkDone();
+    await backend.idle();
     const state = await backend.readState();
     check(
       'torn neighbours resume collision without a CPU topology update',
@@ -657,7 +703,7 @@ if (!only || only === 'fabric') {
     backend.topologyDirty = true;
     backend.pack(solver);
     backend.step(solver);
-    await backend.device.queue.onSubmittedWorkDone();
+    await backend.idle();
     const colouring = await backend.readColoring();
     const springState =
       (await backend.readSpringStates())[backend.springIndex.get(spring)];
@@ -681,7 +727,7 @@ if (!only || only === 'fabric') {
     backend.topologyDirty = true;
     backend.pack(solver);
     backend.step(solver);
-    await backend.device.queue.onSubmittedWorkDone();
+    await backend.idle();
     const state = (await backend.readSpringStates())[backend.springIndex.get(spring)];
     check(
       'ordinary and rope springs remain non-tearing',
@@ -692,7 +738,7 @@ if (!only || only === 'fabric') {
 }
 
 // ---------------------------------------------------------------------------
-// 2b. Wide manifolds and slot chaining
+// 2d. Wide manifolds and slot chaining
 //
 // A slot holds CONTACTS_PER_SLOT contact records and a wider manifold chains
 // onto consecutive slots. Clipping a square face against a square face rotated
@@ -726,7 +772,7 @@ if (!only || only === 'chain') {
   backend.topologyDirty = true;
   backend.pack(solver);
   for (let i = 0; i < 30; i++) backend.step(solver);
-  await backend.device.queue.onSubmittedWorkDone();
+  await backend.idle();
   await new Promise((r) => setTimeout(r, 20));
   const st = await backend.readState();
   const chainInfo = await backend.readColoring();
@@ -791,7 +837,7 @@ if (!only || only === 'warmstart') {
   backend.topologyDirty = true;
   backend.pack(solver);
   for (let i = 0; i < 150; i++) backend.step(solver);
-  await backend.device.queue.onSubmittedWorkDone();
+  await backend.idle();
   await new Promise((r) => setTimeout(r, 20));
 
   const { slotInfo } = await backend.readColoring();
@@ -819,7 +865,7 @@ if (!only || only === 'warmstart') {
 }
 
 // ---------------------------------------------------------------------------
-// 2b. Persistent manifold refresh and basis transport
+// 2e. Persistent manifold refresh and basis transport
 //
 // Corrupt the previous feature ID so exact matching cannot succeed, inject a
 // known warm-start force, then rigidly rotate the entire contacting pair.
@@ -867,7 +913,7 @@ if (!only || only === 'manifold') {
   backend.topologyDirty = true;
   backend.pack(solver);
   backend.step(solver);
-  await backend.device.queue.onSubmittedWorkDone();
+  await backend.idle();
 
   const before = await backend.readColoring();
   const oldSlot = before.slotInfo.findIndex((slot) => slot.numContacts > 0);
@@ -902,7 +948,9 @@ if (!only || only === 'manifold') {
     backend.device.queue.writeBuffer(
       backend.consBuf,
       (oldRecord + 16) * 4,
-      new Uint32Array([oldContact.feature ^ 0x00ffffff])
+      // Feature IDs are 24-bit odd integers stored as f32 values; flipping
+      // all 24 bits yields an even ID that can match no live feature.
+      new Float32Array([oldContact.feature ^ 0x00ffffff])
     );
 
     // Rigidly rotate both bodies and their centers about the origin.
@@ -928,7 +976,7 @@ if (!only || only === 'manifold') {
     }
 
     backend.step(solver);
-    await backend.device.queue.onSubmittedWorkDone();
+    await backend.idle();
     const after = await backend.readColoring();
     const newInfo = after.slotInfo.find((slot) => slot.numContacts > 0);
     const carried = newInfo?.contacts.reduce((best, contact) => {
@@ -978,7 +1026,7 @@ if (!only || only === 'manifold') {
 }
 
 // ---------------------------------------------------------------------------
-// 2c. Application lifecycle
+// 2f. Application lifecycle
 //
 // The sanity cases above pack once and then step in a tight loop, which is not
 // how the sandbox runs. The app boots on the CPU engine while the compute
@@ -1002,7 +1050,7 @@ async function lifecycle(build, { cpuSteps = 40, gpuSteps = 240, spawnAt = -1 } 
     backend.step(solver);
     // Yield the way a frame boundary does, so the readback continuation runs.
     if (i % 3 === 0) {
-      await backend.device.queue.onSubmittedWorkDone();
+      await backend.idle();
       await new Promise((r) => setTimeout(r, 0));
     }
     if (i === spawnAt) {
@@ -1014,7 +1062,7 @@ async function lifecycle(build, { cpuSteps = 40, gpuSteps = 240, spawnAt = -1 } 
       backend.prepareTopologyChange();
     }
   }
-  await backend.device.queue.onSubmittedWorkDone();
+  await backend.idle();
   await new Promise((r) => setTimeout(r, 20));
 
   const { data, layout } = await backend.readState();
@@ -1061,7 +1109,7 @@ if (!only || only === 'lifecycle') {
 }
 
 // ---------------------------------------------------------------------------
-// 2d. Topology-only flush and GPU-owned body state
+// 2g. Topology-only flush and GPU-owned body state
 // ---------------------------------------------------------------------------
 
 if (!only || only === 'topology') {
@@ -1080,7 +1128,7 @@ if (!only || only === 'topology') {
   backend.topologyDirty = true;
   backend.pack(solver);
   backend.step(solver);
-  await backend.device.queue.onSubmittedWorkDone();
+  await backend.idle();
 
   const stateSections = BODY_SECTIONS.filter(([name]) => name !== 'bStatic');
   const expected = new Map();
@@ -1127,7 +1175,7 @@ if (!only || only === 'topology') {
   backend.prepareTopologyChange();
   const flushed = backend.flushTopology(solver);
   const redundantFlush = backend.flushTopology(solver);
-  await backend.device.queue.onSubmittedWorkDone();
+  await backend.idle();
 
   const repacked = await backend.readState();
   const preserved = (body) => {
@@ -1207,7 +1255,7 @@ if (!only || only === 'topology') {
       new Float32Array([1])
     );
     backend.step(pairSolver);
-    await backend.device.queue.onSubmittedWorkDone();
+    await backend.idle();
     const pairState = await backend.readState();
 
     check(
@@ -1252,7 +1300,7 @@ if (!only || only === 'topology') {
     backend.topologyDirty = true;
     backend.pack(jointSolver);
     backend.step(jointSolver);
-    await backend.device.queue.onSubmittedWorkDone();
+    await backend.idle();
 
     const jointIndex = backend.jointIndex.get(joint);
     const jointBase =
@@ -1275,9 +1323,9 @@ if (!only || only === 'topology') {
     new Rigid(jointSolver, [1, 1, 1], 0, 0.5, [1000, 0, 0]);
     backend.prepareTopologyChange();
     backend.flushTopology(jointSolver);
-    await backend.device.queue.onSubmittedWorkDone();
+    await backend.idle();
     backend.step(jointSolver);
-    await backend.device.queue.onSubmittedWorkDone();
+    await backend.idle();
     const fracturedContactState = await backend.readState();
     await backend.syncToCPU(jointSolver);
 
@@ -1338,7 +1386,7 @@ if (!only || only === 'topology') {
     backend.topologyDirty = true;
     backend.pack(stableSolver);
     for (let step = 0; step < 240; step++) backend.step(stableSolver);
-    await backend.device.queue.onSubmittedWorkDone();
+    await backend.idle();
 
     const positionsOf = async () => {
       const state = await backend.readState();
@@ -1378,7 +1426,7 @@ if (!only || only === 'topology') {
     new Rigid(stableSolver, [1, 1, 1], 0, 0.5, [1000, 1000, 1000]);
     backend.prepareTopologyChange();
     backend.flushTopology(stableSolver);
-    await backend.device.queue.onSubmittedWorkDone();
+    await backend.idle();
 
     const flushDisplacement = displacementFrom(
       settledPositions,
@@ -1388,7 +1436,7 @@ if (!only || only === 'topology') {
     const flushedPeak = peakPenalty(flushedInfo);
 
     backend.step(stableSolver);
-    await backend.device.queue.onSubmittedWorkDone();
+    await backend.idle();
     const firstInfo = await backend.readColoring();
     const firstPeak = peakPenalty(firstInfo);
     const dynamicEdges = firstInfo.contactPairs.filter(([a, b]) =>
@@ -1406,7 +1454,7 @@ if (!only || only === 'topology') {
     let completed = 1;
     for (const sample of [2, 3, 6, 12, 24]) {
       for (; completed < sample; completed++) backend.step(stableSolver);
-      await backend.device.queue.onSubmittedWorkDone();
+      await backend.idle();
       worstDisplacement = Math.max(
         worstDisplacement,
         displacementFrom(settledPositions, await positionsOf())
@@ -1436,7 +1484,7 @@ if (!only || only === 'topology') {
     removablePrefix.destroy();
     backend.prepareTopologyChange();
     backend.flushTopology(stableSolver);
-    await backend.device.queue.onSubmittedWorkDone();
+    await backend.idle();
 
     const deleteFlushMove = displacementFrom(
       preDeletePositions,
@@ -1444,7 +1492,7 @@ if (!only || only === 'topology') {
     );
     const deleteFlushedPeak = peakPenalty(await backend.readColoring());
     backend.step(stableSolver);
-    await backend.device.queue.onSubmittedWorkDone();
+    await backend.idle();
     const deleteFirstInfo = await backend.readColoring();
     const deleteFirstPeak = peakPenalty(deleteFirstInfo);
     const deleteFirstMedian = medianPenalty(deleteFirstInfo);
@@ -1466,7 +1514,7 @@ if (!only || only === 'topology') {
       for (; deleteCompleted < sample; deleteCompleted++) {
         backend.step(stableSolver);
       }
-      await backend.device.queue.onSubmittedWorkDone();
+      await backend.idle();
       deleteWorstMove = Math.max(
         deleteWorstMove,
         displacementFrom(preDeletePositions, await positionsOf())
@@ -1494,7 +1542,7 @@ if (!only || only === 'topology') {
 }
 
 // ---------------------------------------------------------------------------
-// 2c. The colouring path
+// 2h. The colouring path
 //
 // color_init, color_jacobi, color_count, color_offsets and color_scatter are
 // five of the twenty kernels, and nothing covered them: the GPU-vs-CPU harness
@@ -1524,7 +1572,7 @@ async function colourScene(build, rounds, steps = 90) {
   backend.topologyDirty = true;
   backend.pack(solver);
   for (let i = 0; i < steps; i++) backend.step(solver);
-  await backend.device.queue.onSubmittedWorkDone();
+  await backend.idle();
 
   const colouring = await backend.readColoring();
   backend.colorRounds = JACOBI_ITERS;
@@ -1685,7 +1733,7 @@ if (!only || only === 'colouring') {
 }
 
 // ---------------------------------------------------------------------------
-// 2d. Static-friction anchor persistence (paper Section 3.3)
+// 2i. Static-friction anchor persistence (paper Section 3.3)
 //
 // A slow, high-friction contact is inside the Coulomb cone despite moving more
 // than the old displacement threshold, so its anchors must stay pinned. A fast,
@@ -1715,7 +1763,7 @@ if (!only || only === 'friction') {
   backend.topologyDirty = true;
   backend.pack(solver);
   for (let i = 0; i < 90; i++) backend.step(solver);
-  await backend.device.queue.onSubmittedWorkDone();
+  await backend.idle();
 
   const slowIndex = backend.bodyIndex.get(slow);
   const fastIndex = backend.bodyIndex.get(fast);
@@ -1744,7 +1792,7 @@ if (!only || only === 'friction') {
     new Float32Array([10, 0, 0, 0])
   );
   backend.step(solver);
-  await backend.device.queue.onSubmittedWorkDone();
+  await backend.idle();
 
   const after = await backend.readColoring();
   const slowAfter = stickStateForBody(after, slowIndex);
@@ -1762,7 +1810,7 @@ if (!only || only === 'friction') {
 }
 
 // ---------------------------------------------------------------------------
-// 2e. GPU material model: separate static/dynamic friction and restitution
+// 2j. GPU material model: static/dynamic friction, restitution, penalty cap
 // ---------------------------------------------------------------------------
 
 function forceRatioForBody(colouring, bodyIndex) {
@@ -1806,7 +1854,7 @@ async function oneStepImpact({ velocity, restitution, contactOffset }) {
   backend.topologyDirty = true;
   backend.pack(solver);
   backend.step(solver);
-  await backend.device.queue.onSubmittedWorkDone();
+  await backend.idle();
 
   const state = await backend.readState();
   const colouring = await backend.readColoring();
@@ -1850,12 +1898,12 @@ async function stagedImpact(restitution) {
   backend.pack(solver);
 
   backend.step(solver);
-  await backend.device.queue.onSubmittedWorkDone();
+  await backend.idle();
   const first = await backend.readColoring();
   const firstState = await backend.readState();
 
   backend.step(solver);
-  await backend.device.queue.onSubmittedWorkDone();
+  await backend.idle();
   const second = await backend.readColoring();
   const state = await backend.readState();
   return {
@@ -1888,7 +1936,7 @@ if (!only || only === 'materials') {
     backend.topologyDirty = true;
     backend.pack(solver);
     for (let i = 0; i < 90; i++) backend.step(solver);
-    await backend.device.queue.onSubmittedWorkDone();
+    await backend.idle();
 
     solver.iterations = 1;
     const velocityBase = backend.layout.body.bVel;
@@ -1905,7 +1953,7 @@ if (!only || only === 'materials') {
       new Float32Array([200, 0, 0, 0])
     );
     backend.step(solver);
-    await backend.device.queue.onSubmittedWorkDone();
+    await backend.idle();
 
     const colouring = await backend.readColoring();
     const slowForce = forceRatioForBody(colouring, slowIndex);
@@ -1972,10 +2020,35 @@ if (!only || only === 'materials') {
         `elastic ${JSON.stringify(stagedElastic)}`
     );
   }
+
+  {
+    // A joint's penalty is capped by its material stiffness and by the
+    // solver's penaltyMax, as on the CPU. The GPU packed min(k*, 1e10) and
+    // capped the in-step ramp with that alone, so a lowered penaltyMax held
+    // only at the warm start. Low enough that the ramp reaches it every step.
+    const solver = new Solver();
+    solver.defaultParams();
+    solver.penaltyMax = 50;
+    const anchor = new Rigid(solver, [1, 1, 1], 0, 0.5, [0, 0, 4]);
+    const bob = new Rigid(solver, [1, 1, 1], 1, 0.5, [1.5, 0, 4]);
+    const joint = new Joint(solver, anchor, bob, [0.5, 0, 0], [-1, 0, 0], Infinity, Infinity);
+    backend.overrideColoring = null;
+    backend.topologyDirty = true;
+    backend.pack(solver);
+    for (let i = 0; i < 20; i++) backend.step(solver);
+    await backend.idle();
+    await backend.syncToCPU(solver);
+    const peak = Math.max(...joint.penaltyLin, ...joint.penaltyAng);
+    check(
+      'GPU joint penalties respect a lowered penaltyMax',
+      peak >= solver.penaltyMax * 0.99 && peak <= solver.penaltyMax * (1 + 1e-6),
+      `peak joint penalty ${peak}, penaltyMax ${solver.penaltyMax}`
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
-// 2f. Contact/rest offsets and speculative contacts
+// 2k. Contact/rest offsets and speculative contacts
 // ---------------------------------------------------------------------------
 
 if (!only || only === 'offsets') {
@@ -2022,7 +2095,7 @@ if (!only || only === 'offsets') {
 }
 
 // ---------------------------------------------------------------------------
-// 2g. Per-pass timing
+// 2l. Per-pass timing
 //
 // Item 5's unreconciled measurement — 39 ms of narrow phase reported next to
 // zero candidate pairs — is only diagnosable if the timing and the counters
@@ -2051,7 +2124,7 @@ if (!only || only === 'profile') {
 
     for (let i = 0; i < 24; i++) {
       backend.step(solver);
-      await backend.device.queue.onSubmittedWorkDone();
+      await backend.idle();
       await new Promise((r) => setTimeout(r, 0));
     }
 
@@ -2100,6 +2173,18 @@ if (!only || only === 'profile') {
 
 if (!only || only === 'parity') {
   const report = await runGpuTests(backend);
+  // runGpuTests reports a harness failure in `shaderError` with no results.
+  // Iterating an empty result list would otherwise pass vacuously.
+  check(
+    'the GPU-vs-CPU harness runs every scene',
+    !report.shaderError && report.results.length > 0,
+    report.shaderError ?? 'no scene results were produced'
+  );
+  check(
+    'the render module compiles in the GPU-vs-CPU harness',
+    report.renderShader === 'compiles',
+    String(report.renderShader)
+  );
   for (const result of report.results) {
     const worst = Math.max(...result.steps.map((s) => s.maxErr));
     check(

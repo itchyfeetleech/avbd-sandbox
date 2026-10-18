@@ -63,6 +63,34 @@ function ceilPow2(v) {
   return p;
 }
 
+/**
+ * Create a shader module and collect its compile errors as
+ * `{ lineNum, linePos, message }` records.
+ *
+ * `getCompilationInfo()` gives line positions, but not every implementation
+ * provides it (Deno's does not). A validation error scope still catches an
+ * invalid module there, without positions; a module that cannot be checked
+ * either way reports no errors and fails later at pipeline creation instead.
+ */
+export async function compileShaderModule(device, code, label) {
+  const scoped = typeof device.pushErrorScope === 'function';
+  if (scoped) device.pushErrorScope('validation');
+  const module = device.createShaderModule({ code, label });
+  const scopeError = scoped ? await device.popErrorScope() : null;
+
+  let errors = [];
+  if (typeof module.getCompilationInfo === 'function') {
+    const info = await module.getCompilationInfo();
+    errors = info.messages
+      .filter((m) => m.type === 'error')
+      .map(({ lineNum, linePos, message }) => ({ lineNum, linePos, message }));
+  }
+  if (errors.length === 0 && scopeError) {
+    errors = [{ lineNum: 0, linePos: 0, message: scopeError.message }];
+  }
+  return { module, errors };
+}
+
 /** Largest 1-D pair workload that can be submitted as one indirect dispatch. */
 export function maxDispatchablePairs(limits) {
   const groups = Math.max(
@@ -339,12 +367,14 @@ export class GpuBackend {
     // discards the offending command buffer — which looks exactly like "the
     // simulation isn't running". Capture them so they surface loudly.
     this.gpuErrors = [];
-    this.device.addEventListener('uncapturederror', (event) => {
+    this.device.addEventListener?.('uncapturederror', (event) => {
       const message = event.error?.message || String(event.error);
       if (this.gpuErrors.length < 12) this.gpuErrors.push(message);
       console.error('[WebGPU]', message);
     });
-    this.device.lost.then((info) => {
+    // Not every implementation provides `lost` (Deno's does not), and a
+    // missing promise must not turn device acquisition into a crash.
+    this.device.lost?.then((info) => {
       this.ready = false;
       this.gpuErrors.push(`device lost: ${info.reason} ${info.message}`);
       console.error('[WebGPU] device lost:', info);
@@ -364,9 +394,9 @@ export class GpuBackend {
   async initPipelines(onProgress) {
     if (!this.device) throw new Error('initDevice() must run first.');
 
-    const module = this.device.createShaderModule({ code: SHADER_SOURCE });
-    const compilation = await module.getCompilationInfo();
-    const errors = compilation.messages.filter((m) => m.type === 'error');
+    const { module, errors } = await compileShaderModule(
+      this.device, SHADER_SOURCE, 'avbd-physics'
+    );
     if (errors.length) {
       this.shaderError = errors
         .map((m) => `${m.lineNum}:${m.linePos} ${m.message}`)
@@ -402,7 +432,8 @@ export class GpuBackend {
     // frozen partway through.
     for (let i = 0; i < KERNELS.length; i++) {
       const name = KERNELS[i];
-      this.pipelines[name] = await this.device.createComputePipelineAsync({
+      this.pipelines[name] = await this._createComputePipeline({
+        label: name,
         layout: pipelineLayout,
         compute: { module, entryPoint: name },
       });
@@ -416,6 +447,25 @@ export class GpuBackend {
 
     this.ready = true;
     return this;
+  }
+
+  /**
+   * Prefer asynchronous pipeline creation, which lets a browser compile off the
+   * main thread. A GPUPipelineError is a real failure and propagates. A
+   * TypeError is the binding rejecting the descriptor itself — Deno 2.x does
+   * this for every valid descriptor — and the synchronous call validates the
+   * same descriptor, so retrying there cannot hide a genuine mistake.
+   */
+  async _createComputePipeline(descriptor) {
+    const d = this.device;
+    if (typeof d.createComputePipelineAsync === 'function') {
+      try {
+        return await d.createComputePipelineAsync(descriptor);
+      } catch (err) {
+        if (!(err instanceof TypeError)) throw err;
+      }
+    }
+    return d.createComputePipeline(descriptor);
   }
 
   destroyBuffers() {
@@ -558,25 +608,9 @@ export class GpuBackend {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    this.maxPassSlots = 4096;
-    this.passBuf = d.createBuffer({
-      label: 'PASS', size: this.maxPassSlots * PASS_SLOT_BYTES,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    this.passData = new ArrayBuffer(this.maxPassSlots * PASS_SLOT_BYTES);
-
-    this.bindGroup = d.createBindGroup({
-      layout: this.bindLayout,
-      entries: [
-        { binding: 0, resource: { buffer: this.bodyBuf } },
-        { binding: 1, resource: { buffer: this.consBuf } },
-        { binding: 2, resource: { buffer: this.metaBuf } },
-        { binding: 3, resource: { buffer: this.atomBuf } },
-        { binding: 4, resource: { buffer: this.indStorageBuf } },
-        { binding: 5, resource: { buffer: this.guBuf } },
-        { binding: 6, resource: { buffer: this.passBuf, size: PASS_SLOT_BYTES } },
-      ],
-    });
+    // Null first, so the bind group is rebuilt around the new buffers.
+    this.passBuf = null;
+    this._ensurePassSlots(4096);
 
     // Stats + state readback ring.
     // Five vec4 sections per body: pos, quat, vel, angular vel, prev vel.
@@ -975,7 +1009,6 @@ export class GpuBackend {
     const consPrefix = L.cons.cSlotA;
     const consData = this.packCons;
     consData.fill(0, 0, consPrefix);
-    const consU32 = new Uint32Array(consData.buffer);
     for (let j = 0; j < joints.length; j++) {
       const f = joints[j];
       const o = L.cons.cJoint + j * JOINT_STRIDE;
@@ -988,8 +1021,11 @@ export class GpuBackend {
       consData[o + 24] = f.torqueArm;
       consData[o + 25] = f.stiffnessLin === Infinity ? 1 : 0;
       consData[o + 26] = f.stiffnessAng === Infinity ? 1 : 0;
-      consData[o + 27] = Math.min(f.stiffnessLin, 1e10);
-      consData[o + 28] = Math.min(f.stiffnessAng, 1e10);
+      // The material stiffness, kept finite for f32. The shaders cap the
+      // penalty at GU.penaltyMax too, as the CPU does, so a solver whose
+      // penaltyMax differs from the default is followed on both backends.
+      consData[o + 27] = Math.min(f.stiffnessLin, 3.4e38);
+      consData[o + 28] = Math.min(f.stiffnessAng, 3.4e38);
       consData[o + 29] = f.fracture === Infinity ? 3.4e37 : f.fracture * f.fracture;
       consData[o + 30] = f.broken ? 1 : 0;
     }
@@ -1108,8 +1144,10 @@ export class GpuBackend {
     }
 
     q.writeBuffer(this.bodyBuf, 0, bodyData);
-    q.writeBuffer(this.consBuf, 0, consData, 0, consPrefix);
-    void consU32;
+    // A subarray rather than (data, offset, size): the spec counts a typed
+    // array's offset and size in elements, but Deno counts bytes, and the
+    // mismatch silently uploads only the first quarter of the prefix.
+    q.writeBuffer(this.consBuf, 0, consData.subarray(0, consPrefix));
     q.writeBuffer(this.metaBuf, 0, metaData);
     if (preserveContactState) {
       if (
@@ -1148,7 +1186,7 @@ export class GpuBackend {
         q.submit([colorEnc.finish()]);
         if (colorSnapshot) {
           const releaseColors = () => colorSnapshot.destroy();
-          void q.onSubmittedWorkDone().then(releaseColors, releaseColors);
+          void this.idle().then(releaseColors, releaseColors);
         }
       }
     } else {
@@ -1194,7 +1232,7 @@ export class GpuBackend {
         bodySnapshot.destroy();
         deferredOldBody?.destroy();
       };
-      void q.onSubmittedWorkDone().then(releaseSnapshot, releaseSnapshot);
+      void this.idle().then(releaseSnapshot, releaseSnapshot);
     } else {
       deferredOldBody?.destroy();
     }
@@ -1252,7 +1290,7 @@ export class GpuBackend {
       };
       // Device loss rejects the completion promise; cleanup remains safe and
       // avoids turning that expected failure path into an unhandled rejection.
-      void q.onSubmittedWorkDone().then(releaseSnapshots, releaseSnapshots);
+      void this.idle().then(releaseSnapshots, releaseSnapshots);
     } else {
       deferredOldCons?.destroy();
     }
@@ -1306,14 +1344,46 @@ export class GpuBackend {
     this.device.queue.writeBuffer(this.guBuf, 0, F.buffer, 0, GU_BYTES);
   }
 
+  /**
+   * Size the per-dispatch uniform slots for `count` dispatches. A step needs
+   * one per (iteration, colour), so the count grows with the iteration slider
+   * and the colours in use; a fixed size made a long solve throw mid-encode.
+   * Growth replaces the buffer and therefore the bind group that holds it;
+   * work already submitted keeps the old buffer alive until it completes.
+   */
+  _ensurePassSlots(count) {
+    if (this.passBuf && count <= this.maxPassSlots) return;
+    let slots = this.maxPassSlots || 4096;
+    while (slots < count) slots *= 2;
+    this.passBuf?.destroy();
+    this.maxPassSlots = slots;
+    this.passBuf = this.device.createBuffer({
+      label: 'PASS', size: slots * PASS_SLOT_BYTES,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.passData = new ArrayBuffer(slots * PASS_SLOT_BYTES);
+    this.passU32 = new Uint32Array(this.passData);
+    this.passF32 = new Float32Array(this.passData);
+    this.bindGroup = this.device.createBindGroup({
+      layout: this.bindLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.bodyBuf } },
+        { binding: 1, resource: { buffer: this.consBuf } },
+        { binding: 2, resource: { buffer: this.metaBuf } },
+        { binding: 3, resource: { buffer: this.atomBuf } },
+        { binding: 4, resource: { buffer: this.indStorageBuf } },
+        { binding: 5, resource: { buffer: this.guBuf } },
+        { binding: 6, resource: { buffer: this.passBuf, size: PASS_SLOT_BYTES } },
+      ],
+    });
+  }
+
   _passSlot(slotIndex, phase, color, alpha, extra) {
-    const base = slotIndex * PASS_SLOT_BYTES;
-    const u = new Uint32Array(this.passData, base, 4);
-    const f = new Float32Array(this.passData, base, 4);
-    u[0] = phase;
-    u[1] = color;
-    f[2] = alpha;
-    u[3] = extra;
+    const o = slotIndex * (PASS_SLOT_BYTES / 4);
+    this.passU32[o] = phase;
+    this.passU32[o + 1] = color;
+    this.passF32[o + 2] = alpha;
+    this.passU32[o + 3] = extra;
   }
 
   /**
@@ -1333,11 +1403,14 @@ export class GpuBackend {
     const encColors = this.encColors;
 
     // ---- Pass uniform slots ----
+    // One generic, one per colouring round, the colour cap, then one per
+    // iteration and one per (iteration, colour).
+    const colorRounds = this.colorRounds;
+    this._ensurePassSlots(2 + colorRounds + totalIterations * (1 + encColors));
     let slot = 0;
     const S_GENERIC = slot;
     this._passSlot(slot++, 0, 0, 0, 0);
     const S_JACOBI = slot;
-    const colorRounds = this.colorRounds;
     for (let k = 0; k < colorRounds; k++) this._passSlot(slot++, k, 0, 0, 0);
     const S_COLORCAP = slot;
     // Odd refinement counts leave their result in color buffer B; even counts
@@ -1444,7 +1517,7 @@ export class GpuBackend {
     dispatch('fill_ind_colors', 1);
     publishIndirect();
 
-    // --- Pass 4: the solver loop, Algorithm 1 lines 7-36 ---
+    // --- Pass 5: the solver loop, Algorithm 1 lines 7-36 ---
     for (let it = 0; it < totalIterations; it++) {
       for (let c = 0; c < encColors; c++) {
         const s = S_PRIMAL + it * encColors + c;
@@ -1718,6 +1791,32 @@ export class GpuBackend {
     staging.topologyGeneration = 0;
   }
 
+  /**
+   * Resolve once every queue submission made so far has completed.
+   *
+   * `queue.onSubmittedWorkDone()` is the direct way to ask, but it is not
+   * dependable everywhere: Deno's never resolves, and Firefox's takes ~100 ms
+   * however little work is queued. Mapping a buffer written by a fresh
+   * submission resolves when that submission finishes, and queue order makes
+   * that everything before it too. Verification and benchmarks wait on this;
+   * the frame loop never does.
+   */
+  async idle() {
+    const probe = this.device.createBuffer({
+      label: 'IDLE_PROBE',
+      size: 4,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    const enc = this.device.createCommandEncoder();
+    enc.clearBuffer(probe, 0, 4);
+    this.device.queue.submit([enc.finish()]);
+    try {
+      await probe.mapAsync(GPUMapMode.READ);
+    } finally {
+      probe.destroy();
+    }
+  }
+
   /** Approximate submitted physics steps not yet known complete on the GPU. */
   get queuedSteps() {
     return Math.max(0, this.submittedStepSerial - this.completedStepSerial);
@@ -1956,7 +2055,6 @@ export class GpuBackend {
     const atom = new Uint32Array(raw, 0, L.atomU32Len);
     const meta = new Uint32Array(raw, atomBytes, L.metaU32Len);
     const cons = new Float32Array(raw, atomBytes + metaBytes, L.consF32Len);
-    const consU = new Uint32Array(raw, atomBytes + metaBytes, L.consF32Len);
 
     const n = this.numBodies;
     const colorOf = Array.from(
@@ -1984,7 +2082,7 @@ export class GpuBackend {
     const slotInfo = [];
     for (let s = 0; s < slots; s++) {
       const h = base + s * SLOT_STRIDE;
-      contactPairs.push([consU[h + 3], consU[h + 4]]);
+      contactPairs.push([cons[h + 3], cons[h + 4]]);
       const numContacts = Math.min(CONTACTS_PER_SLOT, cons[h + 1]);
       slotInfo.push({
         numContacts: cons[h + 1],
@@ -2005,7 +2103,7 @@ export class GpuBackend {
             penalty: [cons[cb + 9], cons[cb + 10], cons[cb + 11]],
             lambda: [cons[cb + 12], cons[cb + 13], cons[cb + 14]],
             sticking: cons[cb + 15] > 0.5,
-            feature: consU[cb + 16],
+            feature: cons[cb + 16],
             restitutionBias: cons[cb + 17],
           };
         }),

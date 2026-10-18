@@ -101,13 +101,13 @@ export const SCENES = [
           n++;
         }
       }
-      // This is the scene the sandbox opens on, so it is tuned for how it looks
-      // rather than for how few iterations it can survive. At six the pile is
-      // stable but visibly restless: 5.1e-3 of a block of penetration and an
-      // RMS residual speed of 4.5e-2. Sixteen costs 2.6x on the f64 reference
-      // (4.5 -> 9.6 ms/step at 211 bodies, and far less on the GPU backend) and
-      // buys 9x less penetration and 11x less buzzing. The low-iteration claim
-      // is demonstrated by the avalanche scene, which runs at four.
+      // A showcase, so it is tuned for how it looks rather than for how few
+      // iterations it can survive. At six the pile is stable but visibly
+      // restless: 5.1e-3 of a block of penetration and an RMS residual speed
+      // of 4.5e-2. Sixteen costs 2.6x on the f64 reference (4.5 -> 9.6 ms/step
+      // at 211 bodies, and far less on the GPU backend) and buys 9x less
+      // penetration and 11x less buzzing. The iterations slider goes lower for
+      // anyone testing the paper's low-iteration claim.
       return { camera: { target: [0, 1, 4], distance: 26 }, bodies: n, iterations: 16 };
     },
   },
@@ -137,7 +137,7 @@ export const SCENES = [
     id: 'mass_ratio_stack',
     name: 'Mass-ratio stack',
     blurb:
-      'Boxes of doubling size, so each level carries a much heavier neighbour. Primal methods like AVBD are insensitive to mass ratio.',
+      'Boxes growing 1.55x per level, so each carries a neighbour 3.7x its mass. Primal methods like AVBD are insensitive to mass ratio.',
     build(solver) {
       addGround(solver);
       let topZ = 0;
@@ -245,16 +245,20 @@ export const SCENES = [
     id: 'heavy_chain',
     name: 'Two heavy masses  (Fig. 9)',
     blurb:
-      'Two heavy blocks joined by a 50-link chain. The paper shows dual methods failing to hold the chain together at this mass ratio.',
+      'Two heavy blocks joined by a 40-link chain. The paper shows dual methods failing to hold the chain together at this mass ratio.',
     build(solver) {
       addGround(solver);
       const N = 40;
       const link = 0.5;
       const z = 22;
 
+      // The chain spans [-half, half] and each mass sits flush against its
+      // end link, so every joint starts satisfied. The masses used to start
+      // 1.05 m and 1.55 m short of the chain ends.
+      const half = N * link * 0.5;
       const massSize = 2.6;
       const left = new Rigid(solver, [massSize, massSize, massSize], 40, 0.5, [
-        -N * link * 0.5 - massSize,
+        -half - massSize / 2,
         0,
         z,
       ]);
@@ -264,7 +268,7 @@ export const SCENES = [
       let prevAnchor = [massSize / 2, 0, 0];
       for (let i = 0; i < N; i++) {
         const b = new Rigid(solver, [link, link * 0.5, link * 0.5], 1, 0.4, [
-          -N * link * 0.5 + i * link,
+          -half + link / 2 + i * link,
           0,
           z,
         ]);
@@ -275,7 +279,7 @@ export const SCENES = [
       }
 
       const right = new Rigid(solver, [massSize, massSize, massSize], 40, 0.5, [
-        N * link * 0.5 + massSize,
+        half + massSize / 2,
         0,
         z,
       ]);
@@ -346,6 +350,9 @@ export const SCENES = [
           tangent[1] * -13 + y + normal[1] * 1.15,
           6 + tangent[2] * -13 + normal[2] * 1.15,
         ]);
+        // Seated flat on the slope. Unrotated, each block's lowest corner
+        // started 0.15 m inside the ramp and the block toppled into it.
+        b.setOrientation([0, 1, 0], angle);
         // Colour encodes friction: cool = slippery, warm = grippy.
         b.color = [0.35 + friction * 0.75, 0.62 - friction * 0.28, 0.78 - friction * 0.62];
       }
@@ -388,9 +395,14 @@ export const SCENES = [
             );
           }
           if (r > 0) {
+            // Rows are staggered by half a brick, so the bond sits at the
+            // centre of the two bricks' overlap. Anchoring both brick centres
+            // started every vertical joint 0.8 m violated, and the hard
+            // constraints slowly dragged the wall into stacked columns.
+            const shift = stagger - ((r - 1) % 2) * bw * 0.5;
             new Joint(
               solver, grid[r - 1][c], b,
-              [0, 0, bh / 2], [0, 0, -bh / 2],
+              [shift / 2, 0, bh / 2], [-shift / 2, 0, -bh / 2],
               Infinity, Infinity, breakForce
             );
           }
@@ -432,27 +444,37 @@ export const SCENES = [
         prev = b;
       }
 
-      // A cloth-ish sheet of small boxes hanging off the pole, joined by springs
+      // A cloth-ish sheet of small boxes hanging off the pole, joined by
+      // springs. The leading column starts clear of the pole's +x face.
       const cols = 12;
       const rows = 8;
       const cell = 0.62;
+      const poleHalf = 0.25;
+      const x0 = poleHalf + cell * 0.4 + 0.05;
       const sheet = [];
       for (let r = 0; r < rows; r++) {
         sheet[r] = [];
+        const rowZ = N * seg - 1 - r * cell;
         for (let c = 0; c < cols; c++) {
           const b = new Rigid(solver, [cell * 0.8, cell * 0.8, cell * 0.2], 0.4, 0.3, [
-            0.4 + c * cell,
+            x0 + c * cell,
             0,
-            N * seg - 1 - r * cell,
+            rowZ,
           ]);
           b.color = [0.80, 0.35, 0.32];
           sheet[r][c] = b;
           if (c > 0) new Spring(solver, sheet[r][c - 1], b, [0, 0, 0], [0, 0, 0], 900, cell);
           if (r > 0) new Spring(solver, sheet[r - 1][c], b, [0, 0, 0], [0, 0, 0], 900, cell);
         }
-        // Attach the leading edge to the pole with hard constraints
-        const anchorIndex = Math.min(N - 1, Math.round((N * seg - 1 - r * cell) / seg));
-        new Joint(solver, solver.bodies[anchorIndex + 1], sheet[r][0], [0, 0, 0], [0, 0, 0]);
+        // Attach the leading edge with a hard constraint to the pole segment
+        // beside it (body 0 is the ground), at the point on that segment's
+        // face level with the row, so the joint starts satisfied.
+        const segment = Math.min(N - 1, Math.floor(rowZ / seg));
+        const segmentZ = seg / 2 + segment * seg;
+        new Joint(
+          solver, solver.bodies[segment + 1], sheet[r][0],
+          [poleHalf, 0, rowZ - segmentZ], [poleHalf - x0, 0, 0]
+        );
       }
 
       return { camera: { target: [3, 0, 12], distance: 32 } };
@@ -646,10 +668,12 @@ export const SCENES = [
       for (let z = 0; z < NZ; z++) {
         for (let x = 0; x < NX; x++) {
           for (let y = 0; y < NY; y++) {
-            // A little jitter so the fill settles like a pile rather than a lattice.
+            // A little jitter so the fill settles like a pile rather than a
+            // lattice, kept under half the 0.042 clearance so no two boxes, and
+            // no box and wall, start in contact.
             const b = new Rigid(solver, [S, S, S], 1, 0.5, [
-              x * step - halfX + step / 2 + (random() - 0.5) * 0.06,
-              y * step - halfY + step / 2 + (random() - 0.5) * 0.06,
+              x * step - halfX + step / 2 + (random() - 0.5) * 0.04,
+              y * step - halfY + step / 2 + (random() - 0.5) * 0.04,
               z * step + S / 2 + 0.05,
             ]);
             tint(b, (x + y + z) % PALETTE.length, random() * 0.12);
@@ -757,6 +781,63 @@ const DEFAULT_FABRIC_TEAR_STRAIN = 0.75;
 const ROPE_SPACING_FACTOR = 0.72;
 const ROPE_STIFFNESS_AT_DEFAULT_SIZE = 320;
 const STRUCTURE_GAP_FACTOR = 0.02;
+/** Rope strands are split to hang clear of the ground, but not below this. */
+const MIN_ROPE_STRAND = 8;
+/** Samples a scattered body gets to find a clear spot before it settles. */
+const SCATTER_TRIES = 40;
+
+/**
+ * Overlap-free placement for the scattered recipes. A candidate is resampled
+ * while its bounds, inflated by `gap`, touch a body already placed. Scattered
+ * bodies are unrotated, so the bounds are exact for boxes and conservative for
+ * spheres. Bodies are binned into every grid cell their bounds cover, so mixed
+ * sizes need no worst-case cell.
+ */
+function makeScatter(cellSize, gap) {
+  const grid = new Map();
+  const boxes = [];
+  const forCells = (c, h, visit) => {
+    const lo = [0, 1, 2].map((a) => Math.floor((c[a] - h[a]) / cellSize));
+    const hi = [0, 1, 2].map((a) => Math.floor((c[a] + h[a]) / cellSize));
+    for (let x = lo[0]; x <= hi[0]; x++) {
+      for (let y = lo[1]; y <= hi[1]; y++) {
+        for (let z = lo[2]; z <= hi[2]; z++) visit(`${x},${y},${z}`);
+      }
+    }
+  };
+  const halfOf = (d) => [d[0] * 0.5 + gap * 0.5, d[1] * 0.5 + gap * 0.5, d[2] * 0.5 + gap * 0.5];
+  return {
+    /** First sample() whose body is clear, or the last one tried. */
+    place(d, sample) {
+      const h = halfOf(d);
+      let c;
+      for (let attempt = 0; attempt < SCATTER_TRIES; attempt++) {
+        c = sample();
+        let clear = true;
+        forCells(c, h, (key) => {
+          for (const i of grid.get(key) ?? []) {
+            const b = boxes[i];
+            if (
+              Math.abs(b[0] - c[0]) < b[3] + h[0] &&
+              Math.abs(b[1] - c[1]) < b[4] + h[1] &&
+              Math.abs(b[2] - c[2]) < b[5] + h[2]
+            ) {
+              clear = false;
+            }
+          }
+        });
+        if (clear) break;
+      }
+      const index = boxes.push([c[0], c[1], c[2], h[0], h[1], h[2]]) - 1;
+      forCells(c, h, (key) => {
+        let list = grid.get(key);
+        if (!list) grid.set(key, (list = []));
+        list.push(index);
+      });
+      return c;
+    },
+  };
+}
 
 function finiteInRange(name, value, min, max, inclusiveMax = true) {
   const valid =
@@ -827,7 +908,9 @@ export function spawnPattern(solver, options = {}) {
   if (!Number.isSafeInteger(requestedCount) || requestedCount < 0) {
     throw new RangeError('count must be a non-negative safe integer');
   }
-  const size = finiteInRange('size', requestedSize, Number.MIN_VALUE, Infinity);
+  // A millimetre to a kilometre. Outside that, inertia underflows to zero or
+  // mass overflows to Infinity and the first step produces NaN.
+  const size = finiteInRange('size', requestedSize, 1e-3, 1e3);
   finiteInRange('variation', variation, 0, 1, false);
   finiteInRange('friction', friction, 0, Infinity);
   finiteInRange('density', density, 0, Infinity);
@@ -931,6 +1014,10 @@ export function spawnPattern(solver, options = {}) {
         FABRIC_STIFFNESS_AT_DEFAULT_SIZE *
         Math.max(0.05, density) *
         (cell / DEFAULT_SPAWN_SIZE) ** 2;
+      // Hang the sheet from the drop height, lifted only as far as needed for
+      // its bottom row to clear the surface: a tall sheet otherwise started
+      // with its lower rows inside, or under, the floor.
+      const top = Math.max(height, diameter + (rows - 1) * cell);
       const sheet = Array.from({ length: rows }, () => []);
       let made = 0;
       for (let r = 0; r < rows && made < count; r++) {
@@ -947,7 +1034,7 @@ export function spawnPattern(solver, options = {}) {
             [
               ox + (c - (cols - 1) * 0.5) * cell,
               oy + billow,
-              oz + height - r * cell,
+              oz + top - r * cell,
             ]
           );
           b.setMaterial({ restitution });
@@ -1008,13 +1095,19 @@ export function spawnPattern(solver, options = {}) {
     case 'rope': {
       if (count === 0) break;
 
-      // Keep individual ropes to a practical length when the large spawn
-      // buttons are used, distributing the requested count across strands.
-      const strands = Math.max(1, Math.ceil(count / 48));
-      const baseStrandLength = Math.floor(count / strands);
-      const longerStrands = count % strands;
+      // Distribute the requested count across strands of a practical length,
+      // each short enough to hang from the drop height without reaching the
+      // surface. Longer strands started inside, or under, the floor. Below
+      // MIN_ROPE_STRAND nodes a strand is lifted clear instead.
       const spacing = Math.max(0.2, size * 0.72);
       const diameter = spacing * 0.55;
+      const fitting = Math.floor((height - diameter) / spacing) + 1;
+      const perStrand = Math.min(48, Math.max(MIN_ROPE_STRAND, fitting));
+      const strands = Math.max(1, Math.ceil(count / perStrand));
+      const baseStrandLength = Math.floor(count / strands);
+      const longerStrands = count % strands;
+      const longest = baseStrandLength + (longerStrands > 0 ? 1 : 0);
+      const top = Math.max(height, diameter + (longest - 1) * spacing);
       const defaultSpacing = DEFAULT_SPAWN_SIZE * ROPE_SPACING_FACTOR;
       const stiffness =
         ROPE_STIFFNESS_AT_DEFAULT_SIZE *
@@ -1037,7 +1130,7 @@ export function spawnPattern(solver, options = {}) {
             diameter,
             i === 0 ? 0 : density,
             friction,
-            [x, oy + bow, oz + height - i * spacing]
+            [x, oy + bow, oz + top - i * spacing]
           );
           b.setMaterial({ restitution });
           b.spawnedBySandbox = true;
@@ -1230,49 +1323,60 @@ export function spawnPattern(solver, options = {}) {
     }
 
     case 'cluster': {
-      // Rejection-sampled points in a ball, dropped together.
-      const radius = Math.cbrt(count) * size * 0.9;
+      // Rejection-sampled points in a ball whose lowest point is the drop
+      // height, dropped together. The ball holds about seven body volumes per
+      // body, which leaves room for every one to start clear of the others; a
+      // single body (the Drop tool) lands exactly where it was aimed.
+      const radius = count > 1 ? Math.cbrt(count) * size * 1.15 : 0;
+      const scatter = makeScatter(size * 1.5, structureGap);
       for (let i = 0; i < count; i++) {
-        let x, y, z;
-        do {
-          x = rand() * 2 - 1;
-          y = rand() * 2 - 1;
-          z = rand() * 2 - 1;
-        } while (x * x + y * y + z * z > 1);
-        add(dims(), [ox + x * radius, oy + y * radius, height + oz + z * radius]);
+        const d = dims();
+        const centreZ = oz + height + radius + d[2] * 0.5;
+        add(d, scatter.place(d, () => {
+          let x, y, z;
+          do {
+            x = rand() * 2 - 1;
+            y = rand() * 2 - 1;
+            z = rand() * 2 - 1;
+          } while (x * x + y * y + z * z > 1);
+          return [ox + x * radius, oy + y * radius, centreZ + z * radius];
+        }));
       }
       break;
     }
 
     case 'funnel': {
-      // A narrow, tall stream — good for watching contacts churn.
+      // A narrow, tall stream rising from the drop height — good for watching
+      // contacts churn.
+      const scatter = makeScatter(size * 1.5, structureGap);
       for (let i = 0; i < count; i++) {
-        const a = rand() * Math.PI * 2;
-        const r = Math.sqrt(rand()) * size * 3;
-        add(dims(), [
-          ox + Math.cos(a) * r,
-          oy + Math.sin(a) * r,
-          height + oz + i * size * 0.55,
-        ]);
+        const d = dims();
+        const z = oz + height + d[2] * 0.5 + i * size * 0.55;
+        add(d, scatter.place(d, () => {
+          const a = rand() * Math.PI * 2;
+          const r = Math.sqrt(rand()) * size * 3;
+          return [ox + Math.cos(a) * r, oy + Math.sin(a) * r, z];
+        }));
       }
       break;
     }
 
     case 'rain':
     default: {
+      // Layers of scattered bodies, the lowest resting its bottoms on the drop
+      // height, each with a small random velocity.
       const spread = Math.max(6, Math.cbrt(count) * size * 3.2);
       const perLayer = Math.max(1, Math.floor((spread * 2) / (size * 1.5)) ** 2);
+      const scatter = makeScatter(size * 1.5, structureGap);
       for (let i = 0; i < count; i++) {
         const layer = Math.floor(i / perLayer);
-        add(
-          dims(),
-          [
-            ox + (rand() - 0.5) * spread * 2,
-            oy + (rand() - 0.5) * spread * 2,
-            height + oz + layer * size * 1.7 + rand() * 0.2,
-          ],
-          [(rand() - 0.5) * 2, (rand() - 0.5) * 2, -2]
-        );
+        const d = dims();
+        const position = scatter.place(d, () => [
+          ox + (rand() - 0.5) * spread * 2,
+          oy + (rand() - 0.5) * spread * 2,
+          oz + height + d[2] * 0.5 + layer * size * 1.7 + rand() * 0.2,
+        ]);
+        add(d, position, [(rand() - 0.5) * 2, (rand() - 0.5) * 2, -2]);
       }
       break;
     }
