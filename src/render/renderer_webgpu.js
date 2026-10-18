@@ -1056,7 +1056,7 @@ export class RendererWebGPU {
     const count = Math.max(1, springs.length);
     state.fill(0, 0, count);
     for (let i = 0; i < springs.length; i++) state[i] = springs[i].broken ? 1 : 0;
-    this.device.queue.writeBuffer(this.fabricInternalStateBuf, 0, state, 0, count);
+    this.device.queue.writeBuffer(this.fabricInternalStateBuf, 0, state.subarray(0, count));
   }
 
   /**
@@ -1066,10 +1066,16 @@ export class RendererWebGPU {
    * bInitQ), which is what render interpolation blends from.
    */
   setPoseSourceExternal(buffer, posBase, quatBase, prevPosBase, prevQuatBase) {
+    // bPos is the first body section, so posBase alone is always 0; a layout
+    // change shows up in the other bases.
+    const current = this.externalPose;
     if (
-      this.externalPose &&
-      this.externalPose.buffer === buffer &&
-      this.externalPose.posBase === posBase
+      current &&
+      current.buffer === buffer &&
+      current.posBase === posBase &&
+      current.quatBase === quatBase &&
+      current.prevPosBase === prevPosBase &&
+      current.prevQuatBase === prevQuatBase
     ) {
       return;
     }
@@ -1114,7 +1120,7 @@ export class RendererWebGPU {
       d[pqBase + i * 4 + 2] = b.initialAng[2];
       d[pqBase + i * 4 + 3] = b.initialAng[3];
     }
-    this.device.queue.writeBuffer(this.internalPoseBuf, 0, d, 0, n * 16);
+    this.device.queue.writeBuffer(this.internalPoseBuf, 0, d.subarray(0, n * 16));
     this._uploadFabricCPUState();
 
     if (this.externalPose !== null || this._cpuPoseBases?.quat !== qBase) {
@@ -1216,10 +1222,14 @@ export class RendererWebGPU {
     // crawl whenever the camera moves.
     const v = this._lightView;
     const texel = (2 * extent) / SHADOW_SIZE;
-    const cx = v[0] * t[0] + v[4] * t[1] + v[8] * t[2] + v[12];
-    const cy = v[1] * t[0] + v[5] * t[1] + v[9] * t[2] + v[13];
-    const ox = cx - Math.round(cx / texel) * texel;
-    const oy = cy - Math.round(cy / texel) * texel;
+    // The view is centred on t, so t's full light-space position is always 0.
+    // Snap its rotation-only projection, which moves with the world, and shift
+    // the window so its centre (and, as extent/texel is whole, its edges) lands
+    // on that world-fixed texel grid.
+    const cx = v[0] * t[0] + v[4] * t[1] + v[8] * t[2];
+    const cy = v[1] * t[0] + v[5] * t[1] + v[9] * t[2];
+    const ox = Math.round(cx / texel) * texel - cx;
+    const oy = Math.round(cy / texel) * texel - cy;
 
     mat4.orthoZO(
       this._lightProj, -extent + ox, extent + ox, -extent + oy, extent + oy, near, far
@@ -1280,7 +1290,7 @@ export class RendererWebGPU {
     device.queue.writeBuffer(this.frameBuf, 0, F);
 
     if (this.lineVertexCount > 0) {
-      device.queue.writeBuffer(this.lineBuf, 0, this.lineData, 0, this.lineVertexCount * 6);
+      device.queue.writeBuffer(this.lineBuf, 0, this.lineData.subarray(0, this.lineVertexCount * 6));
     }
 
     const enc = device.createCommandEncoder();

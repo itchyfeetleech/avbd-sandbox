@@ -132,6 +132,9 @@ export function buildFabricTopology(bodies, forces, externalSpringIndex = null) 
   return {
     records: new Uint32Array(words),
     triangleCount: words.length / FABRIC_TRIANGLE_WORDS,
+    // Body slots are indices into the array this was built from. A consumer
+    // holding a topology across a topology edit checks this before indexing.
+    bodyCount: bodies.length,
     coveredBodyIndices,
     edgeSprings,
     springs,

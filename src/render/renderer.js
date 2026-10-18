@@ -328,6 +328,9 @@ void main() { outColor = vec4(v_color, 1.0); }`;
 // ---------------------------------------------------------------------------
 
 function compile(gl, type, source, label) {
+  // Every query on a lost context fails, which would otherwise surface as a
+  // misleading "shader failed: null".
+  if (gl.isContextLost()) throw new Error('The WebGL2 context was lost.');
   const shader = gl.createShader(type);
   gl.shaderSource(shader, source);
   gl.compileShader(shader);
@@ -441,6 +444,7 @@ export class Renderer {
 
     this.canvas = canvas;
     this.gl = gl;
+    this._uniformLocations = new Map();
 
     gl.enable(gl.DEPTH_TEST);
     gl.enable(gl.CULL_FACE);
@@ -555,6 +559,21 @@ export class Renderer {
   }
 
   /** Point a mesh VAO's instanced attributes at one contiguous shape group. */
+  /** Uniform location, looked up once per program rather than every frame. */
+  _uniform(program, name) {
+    let locations = this._uniformLocations.get(program);
+    if (!locations) {
+      locations = new Map();
+      this._uniformLocations.set(program, locations);
+    }
+    let location = locations.get(name);
+    if (location === undefined) {
+      location = this.gl.getUniformLocation(program, name);
+      locations.set(name, location);
+    }
+    return location;
+  }
+
   _bindInstanceBase(vao, firstInstance) {
     const gl = this.gl;
     const stride = INSTANCE_FLOATS * 4;
@@ -678,7 +697,11 @@ export class Renderer {
 
   _updateFabricVertices(bodies) {
     const topology = this.fabricTopology;
-    if (!topology?.triangleCount) {
+    // setBodies() runs every frame, so after a topology edit it can still hold
+    // the previous topology, whose slots may index past the shortened body
+    // list (switching scene, undoing a fabric). Draw no fabric until the
+    // rebuild, which setFabricData() performs later in the same frame.
+    if (!topology?.triangleCount || topology.bodyCount !== bodies.length) {
       this.fabricVertexCount = 0;
       return;
     }
@@ -691,33 +714,31 @@ export class Renderer {
     }
 
     const a = Math.min(1, Math.max(0, this.poseAlpha));
-    const lerping = a < 1;
     const records = topology.records;
     const data = this.fabricData;
+    const corner = this._fabricCorner ??= new Float64Array(9);
     let write = 0;
-
-    const position = (body) => {
-      if (!lerping) return body.positionLin;
-      return [
-        body.initialLin[0] + (body.positionLin[0] - body.initialLin[0]) * a,
-        body.initialLin[1] + (body.positionLin[1] - body.initialLin[1]) * a,
-        body.initialLin[2] + (body.positionLin[2] - body.initialLin[2]) * a,
-      ];
-    };
 
     for (let triangle = 0; triangle < topology.triangleCount; triangle++) {
       const links = topology.edgeSprings[triangle];
-      if (links.some((spring) => spring?.broken)) continue;
+      if (links[0]?.broken || links[1]?.broken || links[2]?.broken) continue;
 
+      // Interpolated corner positions, x_t toward x (see setBodies).
       const base = triangle * FABRIC_TRIANGLE_WORDS;
-      const slots = [records[base], records[base + 1], records[base + 2]];
-      const points = slots.map((slot) => position(bodies[slot]));
-      const ux = points[1][0] - points[0][0];
-      const uy = points[1][1] - points[0][1];
-      const uz = points[1][2] - points[0][2];
-      const vx = points[2][0] - points[0][0];
-      const vy = points[2][1] - points[0][1];
-      const vz = points[2][2] - points[0][2];
+      for (let k = 0; k < 3; k++) {
+        const body = bodies[records[base + k]];
+        const p = body.positionLin;
+        const p0 = body.initialLin;
+        corner[k * 3] = a < 1 ? p0[0] + (p[0] - p0[0]) * a : p[0];
+        corner[k * 3 + 1] = a < 1 ? p0[1] + (p[1] - p0[1]) * a : p[1];
+        corner[k * 3 + 2] = a < 1 ? p0[2] + (p[2] - p0[2]) * a : p[2];
+      }
+      const ux = corner[3] - corner[0];
+      const uy = corner[4] - corner[1];
+      const uz = corner[5] - corner[2];
+      const vx = corner[6] - corner[0];
+      const vy = corner[7] - corner[1];
+      const vz = corner[8] - corner[2];
       let nx = uy * vz - uz * vy;
       let ny = uz * vx - ux * vz;
       let nz = ux * vy - uy * vx;
@@ -727,12 +748,11 @@ export class Renderer {
       ny /= nLen;
       nz /= nLen;
 
-      for (let corner = 0; corner < 3; corner++) {
-        const point = points[corner];
-        const color = bodies[slots[corner]].color;
-        data[write++] = point[0];
-        data[write++] = point[1];
-        data[write++] = point[2];
+      for (let k = 0; k < 3; k++) {
+        const color = bodies[records[base + k]].color;
+        data[write++] = corner[k * 3];
+        data[write++] = corner[k * 3 + 1];
+        data[write++] = corner[k * 3 + 2];
         data[write++] = nx;
         data[write++] = ny;
         data[write++] = nz;
@@ -906,10 +926,14 @@ export class Renderer {
     // re-rasterised on a different grid every frame as the camera moves.
     const v = this._lightView;
     const texel = (2 * extent) / SHADOW_SIZE;
-    const cx = v[0] * t[0] + v[4] * t[1] + v[8] * t[2] + v[12];
-    const cy = v[1] * t[0] + v[5] * t[1] + v[9] * t[2] + v[13];
-    const ox = cx - Math.round(cx / texel) * texel;
-    const oy = cy - Math.round(cy / texel) * texel;
+    // The view is centred on t, so t's full light-space position is always 0.
+    // Snap its rotation-only projection, which moves with the world, and shift
+    // the window so its centre (and, as extent/texel is whole, its edges) lands
+    // on that world-fixed texel grid.
+    const cx = v[0] * t[0] + v[4] * t[1] + v[8] * t[2];
+    const cy = v[1] * t[0] + v[5] * t[1] + v[9] * t[2];
+    const ox = Math.round(cx / texel) * texel - cx;
+    const oy = Math.round(cy / texel) * texel - cy;
 
     mat4.ortho(
       this._lightProj, -extent + ox, extent + ox, -extent + oy, extent + oy, near, far
@@ -942,7 +966,7 @@ export class Renderer {
       if (this.instanceCount > 0) {
         gl.useProgram(this.shadowProgram);
         gl.uniformMatrix4fv(
-          gl.getUniformLocation(this.shadowProgram, 'u_lightViewProj'), false, this.lightViewProj
+          this._uniform(this.shadowProgram, 'u_lightViewProj'), false, this.lightViewProj
         );
         if (this.boxInstanceCount > 0) {
           this._bindInstanceBase(this.cubeVao, 0);
@@ -960,7 +984,7 @@ export class Renderer {
       if (this.fabricVertexCount > 0) {
         gl.useProgram(this.fabricShadowProgram);
         gl.uniformMatrix4fv(
-          gl.getUniformLocation(this.fabricShadowProgram, 'u_lightViewProj'),
+          this._uniform(this.fabricShadowProgram, 'u_lightViewProj'),
           false,
           this.lightViewProj
         );
@@ -986,14 +1010,14 @@ export class Renderer {
     if (this.showGround) {
       const p = this.groundProgram;
       gl.useProgram(p);
-      gl.uniformMatrix4fv(gl.getUniformLocation(p, 'u_viewProj'), false, camera.viewProj);
-      gl.uniformMatrix4fv(gl.getUniformLocation(p, 'u_lightViewProj'), false, this.lightViewProj);
-      gl.uniform1f(gl.getUniformLocation(p, 'u_extent'), this.groundExtent);
-      gl.uniform1f(gl.getUniformLocation(p, 'u_height'), this.groundHeight);
-      gl.uniform1i(gl.getUniformLocation(p, 'u_shadowMap'), 0);
-      gl.uniform1f(gl.getUniformLocation(p, 'u_shadowTexel'), shadowTexel);
-      gl.uniform1f(gl.getUniformLocation(p, 'u_shadowBias'), this.shadowBias);
-      gl.uniform3fv(gl.getUniformLocation(p, 'u_eye'), camera.eye);
+      gl.uniformMatrix4fv(this._uniform(p, 'u_viewProj'), false, camera.viewProj);
+      gl.uniformMatrix4fv(this._uniform(p, 'u_lightViewProj'), false, this.lightViewProj);
+      gl.uniform1f(this._uniform(p, 'u_extent'), this.groundExtent);
+      gl.uniform1f(this._uniform(p, 'u_height'), this.groundHeight);
+      gl.uniform1i(this._uniform(p, 'u_shadowMap'), 0);
+      gl.uniform1f(this._uniform(p, 'u_shadowTexel'), shadowTexel);
+      gl.uniform1f(this._uniform(p, 'u_shadowBias'), this.shadowBias);
+      gl.uniform3fv(this._uniform(p, 'u_eye'), camera.eye);
       gl.bindVertexArray(this.groundVao);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
@@ -1001,12 +1025,12 @@ export class Renderer {
     if (this.fabricVertexCount > 0) {
       const p = this.fabricProgram;
       gl.useProgram(p);
-      gl.uniformMatrix4fv(gl.getUniformLocation(p, 'u_viewProj'), false, camera.viewProj);
-      gl.uniformMatrix4fv(gl.getUniformLocation(p, 'u_lightViewProj'), false, this.lightViewProj);
-      gl.uniform3fv(gl.getUniformLocation(p, 'u_lightDir'), this.lightDir);
-      gl.uniform1i(gl.getUniformLocation(p, 'u_shadowMap'), 0);
-      gl.uniform1f(gl.getUniformLocation(p, 'u_shadowTexel'), shadowTexel);
-      gl.uniform1f(gl.getUniformLocation(p, 'u_shadowBias'), this.shadowBias);
+      gl.uniformMatrix4fv(this._uniform(p, 'u_viewProj'), false, camera.viewProj);
+      gl.uniformMatrix4fv(this._uniform(p, 'u_lightViewProj'), false, this.lightViewProj);
+      gl.uniform3fv(this._uniform(p, 'u_lightDir'), this.lightDir);
+      gl.uniform1i(this._uniform(p, 'u_shadowMap'), 0);
+      gl.uniform1f(this._uniform(p, 'u_shadowTexel'), shadowTexel);
+      gl.uniform1f(this._uniform(p, 'u_shadowBias'), this.shadowBias);
       gl.bindVertexArray(this.fabricVao);
       gl.disable(gl.CULL_FACE);
       gl.drawArrays(gl.TRIANGLES, 0, this.fabricVertexCount);
@@ -1016,12 +1040,12 @@ export class Renderer {
     if (this.instanceCount > 0) {
       const p = this.bodyProgram;
       gl.useProgram(p);
-      gl.uniformMatrix4fv(gl.getUniformLocation(p, 'u_viewProj'), false, camera.viewProj);
-      gl.uniformMatrix4fv(gl.getUniformLocation(p, 'u_lightViewProj'), false, this.lightViewProj);
-      gl.uniform3fv(gl.getUniformLocation(p, 'u_lightDir'), this.lightDir);
-      gl.uniform1i(gl.getUniformLocation(p, 'u_shadowMap'), 0);
-      gl.uniform1f(gl.getUniformLocation(p, 'u_shadowTexel'), shadowTexel);
-      gl.uniform1f(gl.getUniformLocation(p, 'u_shadowBias'), this.shadowBias);
+      gl.uniformMatrix4fv(this._uniform(p, 'u_viewProj'), false, camera.viewProj);
+      gl.uniformMatrix4fv(this._uniform(p, 'u_lightViewProj'), false, this.lightViewProj);
+      gl.uniform3fv(this._uniform(p, 'u_lightDir'), this.lightDir);
+      gl.uniform1i(this._uniform(p, 'u_shadowMap'), 0);
+      gl.uniform1f(this._uniform(p, 'u_shadowTexel'), shadowTexel);
+      gl.uniform1f(this._uniform(p, 'u_shadowBias'), this.shadowBias);
       if (this.boxInstanceCount > 0) {
         this._bindInstanceBase(this.cubeVao, 0);
         gl.drawElementsInstanced(
@@ -1039,10 +1063,11 @@ export class Renderer {
     if (this.lineVertexCount > 0) {
       const p = this.lineProgram;
       gl.useProgram(p);
-      gl.uniformMatrix4fv(gl.getUniformLocation(p, 'u_viewProj'), false, camera.viewProj);
+      gl.uniformMatrix4fv(this._uniform(p, 'u_viewProj'), false, camera.viewProj);
       gl.bindVertexArray(this.lineVao);
       gl.bindBuffer(gl.ARRAY_BUFFER, this.lineBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, this.lineData.byteLength, gl.DYNAMIC_DRAW);
+      // Orphan only the range drawn; lineData's capacity only ever grows.
+      gl.bufferData(gl.ARRAY_BUFFER, this.lineVertexCount * 6 * 4, gl.DYNAMIC_DRAW);
       gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.lineData, 0, this.lineVertexCount * 6);
       if (options.linesOnTop) gl.disable(gl.DEPTH_TEST);
       gl.drawArrays(gl.LINES, 0, this.lineVertexCount);
