@@ -200,13 +200,17 @@ export class Solver {
      * orientation on every evaluation, and so did this port.
      *
      * The difference is the term the same Taylor expansion already discards, so
-     * caching is self-consistent. It is not, on measurement, better or cheaper:
-     * accuracy is scene-dependent (worst constraint residual 2.4x better cached
-     * on `tumble`, 1.5x worse on `pyramid`, three parity scenes tied), and the
-     * CPU path shows no win at 2.27 vs 2.21 ms/step on `pyramid`. The GPU path
-     * is where it is meant to pay. From a shared state the two differ by ~2e-7
-     * in one step, so parity's O(1) divergence on chaotic scenes is
-     * amplification rather than a disagreement of that size.
+     * caching is self-consistent. It is not, on measurement, more accurate:
+     * that is scene-dependent (worst constraint residual 2.4x better cached on
+     * `tumble`, 1.5x worse on `pyramid`, three parity scenes tied). On the CPU
+     * it is cheaper since manifold.js builds the angular blocks once per step
+     * instead of up to three times per contact per iteration: 26.3 -> 21.0
+     * ms/step on `pyramid` at 16 iterations, trajectory bit-identical.
+     * (Rebuilding them from x_t on every evaluation had shown no win, 2.27 vs
+     * 2.21 ms/step.) The GPU still rebuilds them, from x_t, where arithmetic is
+     * cheaper than the bandwidth of storing them. From a shared state the two
+     * settings differ by ~2e-7 in one step, so parity's O(1) divergence on
+     * chaotic scenes is amplification rather than a disagreement of that size.
      *
      * Set false to reproduce the 3D demo.
      */

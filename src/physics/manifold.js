@@ -120,6 +120,26 @@ function transportComponents(out, value, oldBasis, newBasis) {
   }
 }
 
+/**
+ * ∂C/∂θ for both bodies of a contact: r × (row of the linear block), the
+ * usual lever-arm coupling, from `_jALin`/`_jBLin` into `_jAAng`/`_jBAng`.
+ */
+function angularBlocks(rAWorld, rBWorld) {
+  for (let r = 0; r < 3; r++) {
+    mat3.getRow(_row, _jALin, r);
+    vec3.cross(_acc, rAWorld, _row);
+    _jAAng[r * 3 + 0] = _acc[0];
+    _jAAng[r * 3 + 1] = _acc[1];
+    _jAAng[r * 3 + 2] = _acc[2];
+
+    mat3.getRow(_row, _jBLin, r);
+    vec3.cross(_acc, rBWorld, _row);
+    _jBAng[r * 3 + 0] = _acc[0];
+    _jBAng[r * 3 + 1] = _acc[1];
+    _jBAng[r * 3 + 2] = _acc[2];
+  }
+}
+
 /** Diagonal of B_new B_oldᵀ diag(value) B_old B_newᵀ. */
 function transportPenalty(out, value, oldBasis, newBasis) {
   const x = value[0], y = value[1], z = value[2];
@@ -156,6 +176,16 @@ export class Manifold extends Force {
     this.basis = mat3.create();
     this.numContacts = 0;
     this.friction = 0;
+
+    /**
+     * The angular Jacobian blocks at x_t, nine numbers for A then nine for B
+     * per contact, when `cachedContactJacobians` is on. Section 4 builds them
+     * once per step; they used to be rebuilt from the same inputs on every
+     * evaluation, up to three per contact per iteration. `initialize`
+     * invalidates them and the first pass of the step refills them.
+     */
+    this.jacobians = new Float64Array(MAX_CONTACTS * 18);
+    this.jacobiansValid = false;
   }
 
   /**
@@ -183,6 +213,7 @@ export class Manifold extends Force {
 
   initialize() {
     const { bodyA, bodyB, solver } = this;
+    this.jacobiansValid = false;
     const hasSphere = bodyA.shape === 'sphere' || bodyB.shape === 'sphere';
     const hadContacts = this.numContacts > 0;
     if (hasSphere && hadContacts) mat3.copy(_oldBasis, this.basis);
@@ -287,13 +318,9 @@ export class Manifold extends Force {
   }
 
   /**
-   * Rebuild the per-contact Jacobians and the clamped force for contact `i`.
-   * Leaves the results in the module scratch: `_jALin`/`_jBLin`/`_jAAng`/
-   * `_jBAng`, `_K`, `_C` and `_F`.
-   */
-  /**
-   * Refresh the per-body state deltas (x - x_t) shared by every contact in
-   * this manifold. Called once per pass, before iterating the contacts.
+   * Set up what every contact in this manifold shares for one pass: the
+   * per-body state deltas (x - x_t) and the linear Jacobian blocks, which are
+   * the contact basis itself. Called once per pass, before the contacts.
    */
   _beginPass() {
     const { bodyA, bodyB } = this;
@@ -301,37 +328,49 @@ export class Manifold extends Force {
     quat.subtract(_dqAAng, bodyA.positionAng, bodyA.initialAng);
     vec3.sub(_dqBLin, bodyB.positionLin, bodyB.initialLin);
     quat.subtract(_dqBAng, bodyB.positionAng, bodyB.initialAng);
-  }
 
-  _evaluate(c, alpha) {
-    const { bodyA, bodyB } = this;
-
-    // Section 4 evaluates the Jacobian once, at x_t, and caches it for the
-    // whole step; `initialAng` is x_t's orientation and is not touched by the
-    // solver loop, so reading it here IS that cache. The alternative rebuilds
-    // it from the current iterate on every evaluation, which is what the
-    // authors' 3D demo does.
-    const cached = this.solver.cachedContactJacobians;
-    quat.rotateVec(_rAWorld, cached ? bodyA.initialAng : bodyA.positionAng, c.rA);
-    quat.rotateVec(_rBWorld, cached ? bodyB.initialAng : bodyB.positionAng, c.rB);
-
-    // ∂C/∂x for both bodies. The linear blocks are the contact basis itself;
-    // the angular blocks are r × (basis row), the usual lever-arm coupling.
     mat3.copy(_jALin, this.basis);
     mat3.negate(_jBLin, this.basis);
 
-    for (let r = 0; r < 3; r++) {
-      mat3.getRow(_row, _jALin, r);
-      vec3.cross(_acc, _rAWorld, _row);
-      _jAAng[r * 3 + 0] = _acc[0];
-      _jAAng[r * 3 + 1] = _acc[1];
-      _jAAng[r * 3 + 2] = _acc[2];
+    if (this.solver.cachedContactJacobians && !this.jacobiansValid) {
+      // Section 4 evaluates the Jacobian once, at x_t, and caches it for the
+      // whole step. `initialAng` is x_t's orientation, which the solver loop
+      // does not touch, so this is filled on the step's first pass.
+      const J = this.jacobians;
+      for (let i = 0; i < this.numContacts; i++) {
+        const c = this.contacts[i];
+        quat.rotateVec(_rAWorld, bodyA.initialAng, c.rA);
+        quat.rotateVec(_rBWorld, bodyB.initialAng, c.rB);
+        angularBlocks(_rAWorld, _rBWorld);
+        J.set(_jAAng, i * 18);
+        J.set(_jBAng, i * 18 + 9);
+      }
+      this.jacobiansValid = true;
+    }
+  }
 
-      mat3.getRow(_row, _jBLin, r);
-      vec3.cross(_acc, _rBWorld, _row);
-      _jBAng[r * 3 + 0] = _acc[0];
-      _jBAng[r * 3 + 1] = _acc[1];
-      _jBAng[r * 3 + 2] = _acc[2];
+  /**
+   * Evaluate contact `i` at the current iterate. Leaves the Jacobians, the
+   * clamped force and the constraint in the module scratch: `_jALin`/
+   * `_jBLin`/`_jAAng`/`_jBAng`, `_K`, `_C` and `_F`. Returns whether the
+   * force lies inside the friction cone.
+   */
+  _evaluate(i, alpha) {
+    const c = this.contacts[i];
+
+    if (this.solver.cachedContactJacobians) {
+      const J = this.jacobians;
+      const o = i * 18;
+      for (let k = 0; k < 9; k++) {
+        _jAAng[k] = J[o + k];
+        _jBAng[k] = J[o + 9 + k];
+      }
+    } else {
+      // The authors' 3D demo instead rebuilds the Jacobian from the current
+      // iterate on every evaluation.
+      quat.rotateVec(_rAWorld, this.bodyA.positionAng, c.rA);
+      quat.rotateVec(_rBWorld, this.bodyB.positionAng, c.rB);
+      angularBlocks(_rAWorld, _rBWorld);
     }
 
     mat3.diagonal(_K, c.penalty[0], c.penalty[1], c.penalty[2]);
@@ -375,7 +414,7 @@ export class Manifold extends Force {
 
     for (let i = 0; i < this.numContacts; i++) {
       const c = this.contacts[i];
-      this._evaluate(c, alpha);
+      this._evaluate(i, alpha);
 
       const jLin = isA ? _jALin : _jBLin;
       const jAng = isA ? _jAAng : _jBAng;
@@ -411,7 +450,7 @@ export class Manifold extends Force {
 
     for (let i = 0; i < this.numContacts; i++) {
       const c = this.contacts[i];
-      const withinFrictionCone = this._evaluate(c, alpha);
+      const withinFrictionCone = this._evaluate(i, alpha);
 
       // λ⁽ⁿ⁺¹⁾ = clamp(k⁽ⁿ⁾ C(x) + λ⁽ⁿ⁾, λmin, λmax)   (Equation 11 + Section 3.2)
       vec3.copy(c.lambda, _F);
