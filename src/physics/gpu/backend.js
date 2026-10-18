@@ -1517,7 +1517,7 @@ export class GpuBackend {
     dispatch('fill_ind_colors', 1);
     publishIndirect();
 
-    // --- Pass 4: the solver loop, Algorithm 1 lines 7-36 ---
+    // --- Pass 5: the solver loop, Algorithm 1 lines 7-36 ---
     for (let it = 0; it < totalIterations; it++) {
       for (let c = 0; c < encColors; c++) {
         const s = S_PRIMAL + it * encColors + c;

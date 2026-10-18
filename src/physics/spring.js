@@ -4,23 +4,22 @@
  *     C(x) = ‖(p_A + R_A r_A) - (p_B + R_B r_B)‖ - rest
  *
  * Because the stiffness is finite, no Lagrangian term is used: the energy is
- * the plain quadratic of Equation 7. What the spring DOES take from the
- * augmented Lagrangian machinery is the progressive stiffness ramp of
- * Section 3.4,
+ * the plain quadratic of Equation 7. The paper also applies the progressive
+ * stiffness ramp of Section 3.4 to such elements,
  *
  *     k⁽ⁿ⁺¹⁾ = min( k*_j , k⁽ⁿ⁾ + β |C_j(x)| )        (Equation 16)
  *
  * evaluated with the ramped stiffness variable rather than the true material
- * stiffness k*. This is the mechanism that fixes VBD's poor convergence under
- * high stiffness ratios (paper Figures 2 and 4): early iterations see a
- * compressed range of stiffnesses, so weak forces can propagate their
- * information globally before the stiff ones dominate the local solve.
+ * stiffness k*, so that early iterations see a compressed range of
+ * stiffnesses (paper Figures 2 and 4). That is available here but OFF by
+ * default (`solver.springStiffnessRamp`): a spring's stiffness is the material
+ * law, and ramped, a stiff spring solves measurably softer than it is.
  *
  * NOTE ON FIDELITY: the authors' 3D demo applies the material stiffness
  * directly and leaves its spring dual update empty, which is plain VBD
- * behaviour. Their 2D demo does implement the ramp. This implementation
- * follows the paper (and the 2D demo) and ramps. It also assembles the
- * geometric stiffness term G̃ of Equation 17, which the 3D demo omits.
+ * behaviour, and so does the default here. Their 2D demo implements the ramp.
+ * This implementation also assembles the geometric stiffness term G̃ of
+ * Equation 17, which the 3D demo omits; that one is on by default.
  */
 
 import { vec3, mat3, quat, clamp, transformPoint } from '../math/maths.js';
@@ -152,8 +151,9 @@ export class Spring extends Force {
     const solver = this.solver;
 
     if (!rampEnabled(solver)) {
-      // Reference-demo behaviour: apply the material stiffness directly, with
-      // no ramping. Retained so the parity harness can isolate this deviation.
+      // The default, and the reference demo's behaviour: apply the material
+      // stiffness directly, with no ramping. solver.js `springStiffnessRamp`
+      // has the measurement behind that choice.
       this.penalty = this.stiffness;
       return this.stiffness > 0;
     }

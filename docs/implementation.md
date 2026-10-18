@@ -69,9 +69,10 @@ ahead of presentation.
 ## Manifold width
 
 A manifold slot carries four contact records, not eight; a wider manifold chains onto
-consecutive slots so nothing is dropped. Measured over 1.76M manifold-steps, 97.2% of
-manifolds fit in four while 2.8% chain. The resulting arena consumes 56.8% of the
-eight-contact-slot layout — 159 MB down to 92 MB at 33k bodies.
+consecutive slots so nothing is dropped. Measured over 1.22M manifold-steps, 97.0% of
+manifolds fit in four while 3.0% chain, so the live arena is 56.7% of what eight-contact
+slots would need. Allocated at 33k bodies, the two ping-pong arenas take 92 MB instead
+of 168 MB.
 
 Reproduce the distribution with `node test/manifold_width.mjs`.
 

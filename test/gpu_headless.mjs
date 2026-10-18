@@ -587,7 +587,7 @@ if (!only || only === 'spheres') {
 }
 
 // ---------------------------------------------------------------------------
-// 2b. GPU-owned fabric tearing
+// 2c. GPU-owned fabric tearing
 // ---------------------------------------------------------------------------
 
 if (!only || only === 'fabric') {
@@ -738,7 +738,7 @@ if (!only || only === 'fabric') {
 }
 
 // ---------------------------------------------------------------------------
-// 2b. Wide manifolds and slot chaining
+// 2d. Wide manifolds and slot chaining
 //
 // A slot holds CONTACTS_PER_SLOT contact records and a wider manifold chains
 // onto consecutive slots. Clipping a square face against a square face rotated
@@ -865,7 +865,7 @@ if (!only || only === 'warmstart') {
 }
 
 // ---------------------------------------------------------------------------
-// 2b. Persistent manifold refresh and basis transport
+// 2e. Persistent manifold refresh and basis transport
 //
 // Corrupt the previous feature ID so exact matching cannot succeed, inject a
 // known warm-start force, then rigidly rotate the entire contacting pair.
@@ -1026,7 +1026,7 @@ if (!only || only === 'manifold') {
 }
 
 // ---------------------------------------------------------------------------
-// 2c. Application lifecycle
+// 2f. Application lifecycle
 //
 // The sanity cases above pack once and then step in a tight loop, which is not
 // how the sandbox runs. The app boots on the CPU engine while the compute
@@ -1109,7 +1109,7 @@ if (!only || only === 'lifecycle') {
 }
 
 // ---------------------------------------------------------------------------
-// 2d. Topology-only flush and GPU-owned body state
+// 2g. Topology-only flush and GPU-owned body state
 // ---------------------------------------------------------------------------
 
 if (!only || only === 'topology') {
@@ -1542,7 +1542,7 @@ if (!only || only === 'topology') {
 }
 
 // ---------------------------------------------------------------------------
-// 2c. The colouring path
+// 2h. The colouring path
 //
 // color_init, color_jacobi, color_count, color_offsets and color_scatter are
 // five of the twenty kernels, and nothing covered them: the GPU-vs-CPU harness
@@ -1733,7 +1733,7 @@ if (!only || only === 'colouring') {
 }
 
 // ---------------------------------------------------------------------------
-// 2d. Static-friction anchor persistence (paper Section 3.3)
+// 2i. Static-friction anchor persistence (paper Section 3.3)
 //
 // A slow, high-friction contact is inside the Coulomb cone despite moving more
 // than the old displacement threshold, so its anchors must stay pinned. A fast,
@@ -1810,7 +1810,7 @@ if (!only || only === 'friction') {
 }
 
 // ---------------------------------------------------------------------------
-// 2e. GPU material model: separate static/dynamic friction and restitution
+// 2j. GPU material model: static/dynamic friction, restitution, penalty cap
 // ---------------------------------------------------------------------------
 
 function forceRatioForBody(colouring, bodyIndex) {
@@ -2048,7 +2048,7 @@ if (!only || only === 'materials') {
 }
 
 // ---------------------------------------------------------------------------
-// 2f. Contact/rest offsets and speculative contacts
+// 2k. Contact/rest offsets and speculative contacts
 // ---------------------------------------------------------------------------
 
 if (!only || only === 'offsets') {
@@ -2095,7 +2095,7 @@ if (!only || only === 'offsets') {
 }
 
 // ---------------------------------------------------------------------------
-// 2g. Per-pass timing
+// 2l. Per-pass timing
 //
 // Item 5's unreconciled measurement — 39 ms of narrow phase reported next to
 // zero candidate pairs — is only diagnosable if the timing and the counters

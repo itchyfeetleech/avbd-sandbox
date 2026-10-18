@@ -20,6 +20,7 @@ import { Solver } from '../src/physics/solver.js';
 import { Manifold } from '../src/physics/manifold.js';
 import { MAX_CONTACTS } from '../src/physics/collide.js';
 import { SCENES, spawnPattern } from '../src/app/scenes.js';
+import { SLOT_HEADER, CONTACT_STRIDE } from '../src/physics/gpu/layout.js';
 
 const STEPS = Number(process.argv[2] || 240);
 
@@ -82,11 +83,12 @@ for (const scene of SCENES) {
   }
 }
 
-// A big settled pile is the case the arena is actually sized for.
+// A big settled pile is the case the arena is actually sized for. Seeded, as
+// the spawner otherwise draws a fresh layout and the totals move run to run.
 for (const pattern of ['rain', 'pyramid', 'funnel']) {
   const solver = new Solver();
   SCENES.find((s) => s.id === 'sandbox').build(solver);
-  spawnPattern(solver, { pattern, count: 1500, size: 0.9, variation: 0.35 });
+  spawnPattern(solver, { pattern, count: 1500, size: 0.9, variation: 0.35, seed: 1 });
   const histogram = newHistogram();
   for (let i = 0; i < STEPS; i++) {
     solver.step();
@@ -127,15 +129,16 @@ for (const r of rows) {
 }
 
 const all = rows[rows.length - 1];
+// Priced with the backend's own record sizes, so the figure follows the layout.
+const stride = (perSlot) => SLOT_HEADER + perSlot * CONTACT_STRIDE;
+const floats8 = all.slots8 * stride(8);
+const floats4 = all.slots4 * stride(4);
 console.log('\nColumns 0..8 are the percentage of manifolds with that many contacts.');
 console.log(
   `\nArena cost, relative to one slot per manifold at 8 contacts:\n` +
-    `  8 contacts/slot: ${all.slots8} slots x ${16 + 8 * 17} floats = ` +
-    `${(all.slots8 * (16 + 8 * 17)) / 1e6}M floats\n` +
-    `  4 contacts/slot: ${all.slots4} slots x ${16 + 4 * 17} floats = ` +
-    `${(all.slots4 * (16 + 4 * 17)) / 1e6}M floats\n` +
-    `  ratio: ${(
-      (all.slots4 * (16 + 4 * 17)) /
-      (all.slots8 * (16 + 8 * 17))
-    ).toFixed(3)}`
+    `  8 contacts/slot: ${all.slots8} slots x ${stride(8)} floats = ` +
+    `${(floats8 / 1e6).toFixed(2)}M floats\n` +
+    `  4 contacts/slot: ${all.slots4} slots x ${stride(4)} floats = ` +
+    `${(floats4 / 1e6).toFixed(2)}M floats\n` +
+    `  ratio: ${(floats4 / floats8).toFixed(3)}`
 );

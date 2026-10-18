@@ -152,8 +152,8 @@ transport allow the rest offset to be selected independently.
 ## Convergence and pacing
 
 `test/convergence.mjs` measures what the iteration budget leaves behind, and confirms
-it *is* a budget: four times the iterations reduces mean penetration 61× on the pyramid
-and 14× on the card tower.
+it *is* a budget: raising it to 40 iterations reduces mean penetration 21.7× on the
+pyramid, which ships at 16, and 13.8× on the card tower, which ships at the default 10.
 
 `test/pacing.mjs` characterises the fixed-timestep loop across seven refresh rates and
 four timesteps, asserting that the simulation advances at real time and that the
@@ -161,19 +161,23 @@ rendered instant stays exactly one step behind it.
 
 ## The GPU backend
 
-`node tools/gputest.mjs` runs the backend headlessly under Deno, in four layers:
+`node tools/gputest.mjs` runs the backend headlessly under Deno, in three layers,
+cheapest first:
 
 1. every WGSL entry point compiles and every pipeline is creatable
-2. bodies land on the ground instead of tunnelling through it — including across the
-   CPU-to-GPU handover and a mid-run repack
-3. the graph colouring is a valid partition and, at its fixed point, conflict-free
-4. the whole thing agrees with the CPU engine
+2. the backend behaves: bodies land on the ground instead of tunnelling through it,
+   including across the CPU-to-GPU handover and a mid-run repack; the graph colouring
+   is a valid partition and, at its fixed point, conflict-free; wide manifolds, fabric
+   tearing, joint fracture, friction, restitution and contact offsets each behave as
+   specified
+3. the whole thing agrees with the CPU engine
 
 The same comparison runs in the browser — click **Verify GPU vs CPU**, or load
 `/?gputest=1` for a run that POSTs its report to `test/gpu-report.json`. It replays the
 GPU's color order on the CPU (legitimate, since bodies within one color share no forces,
 so sequential and parallel execution of a color are the same computation) and compares
-full state. Typical agreement is `1e-6`–`1e-8`, i.e. f32 rounding.
+every dynamic body's position and orientation. Typical agreement is `1e-6`–`1e-8`, i.e.
+f32 rounding.
 
 ### Why a browser too
 
@@ -202,4 +206,6 @@ Ticking **Profile GPU passes** times each compute pass on the GPU timeline via
 `timestamp-query`, and reads the contact counters every step rather than every sixth, so
 the breakdown and the counts beside it describe the same step.
 
-`test/gpu_bench.mjs --scene=avalanche --iterations=4` gives a per-pass A/B profile.
+`test/gpu_bench.mjs --scene=avalanche --iterations=4` gives a per-pass A/B profile. It
+needs WebGPU, so it runs under Deno with the same flags as the headless suite (see its
+header); on a software device it measures arithmetic, not bandwidth.
