@@ -608,25 +608,9 @@ export class GpuBackend {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    this.maxPassSlots = 4096;
-    this.passBuf = d.createBuffer({
-      label: 'PASS', size: this.maxPassSlots * PASS_SLOT_BYTES,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    this.passData = new ArrayBuffer(this.maxPassSlots * PASS_SLOT_BYTES);
-
-    this.bindGroup = d.createBindGroup({
-      layout: this.bindLayout,
-      entries: [
-        { binding: 0, resource: { buffer: this.bodyBuf } },
-        { binding: 1, resource: { buffer: this.consBuf } },
-        { binding: 2, resource: { buffer: this.metaBuf } },
-        { binding: 3, resource: { buffer: this.atomBuf } },
-        { binding: 4, resource: { buffer: this.indStorageBuf } },
-        { binding: 5, resource: { buffer: this.guBuf } },
-        { binding: 6, resource: { buffer: this.passBuf, size: PASS_SLOT_BYTES } },
-      ],
-    });
+    // Null first, so the bind group is rebuilt around the new buffers.
+    this.passBuf = null;
+    this._ensurePassSlots(4096);
 
     // Stats + state readback ring.
     // Five vec4 sections per body: pos, quat, vel, angular vel, prev vel.
@@ -1357,14 +1341,46 @@ export class GpuBackend {
     this.device.queue.writeBuffer(this.guBuf, 0, F.buffer, 0, GU_BYTES);
   }
 
+  /**
+   * Size the per-dispatch uniform slots for `count` dispatches. A step needs
+   * one per (iteration, colour), so the count grows with the iteration slider
+   * and the colours in use; a fixed size made a long solve throw mid-encode.
+   * Growth replaces the buffer and therefore the bind group that holds it;
+   * work already submitted keeps the old buffer alive until it completes.
+   */
+  _ensurePassSlots(count) {
+    if (this.passBuf && count <= this.maxPassSlots) return;
+    let slots = this.maxPassSlots || 4096;
+    while (slots < count) slots *= 2;
+    this.passBuf?.destroy();
+    this.maxPassSlots = slots;
+    this.passBuf = this.device.createBuffer({
+      label: 'PASS', size: slots * PASS_SLOT_BYTES,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.passData = new ArrayBuffer(slots * PASS_SLOT_BYTES);
+    this.passU32 = new Uint32Array(this.passData);
+    this.passF32 = new Float32Array(this.passData);
+    this.bindGroup = this.device.createBindGroup({
+      layout: this.bindLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.bodyBuf } },
+        { binding: 1, resource: { buffer: this.consBuf } },
+        { binding: 2, resource: { buffer: this.metaBuf } },
+        { binding: 3, resource: { buffer: this.atomBuf } },
+        { binding: 4, resource: { buffer: this.indStorageBuf } },
+        { binding: 5, resource: { buffer: this.guBuf } },
+        { binding: 6, resource: { buffer: this.passBuf, size: PASS_SLOT_BYTES } },
+      ],
+    });
+  }
+
   _passSlot(slotIndex, phase, color, alpha, extra) {
-    const base = slotIndex * PASS_SLOT_BYTES;
-    const u = new Uint32Array(this.passData, base, 4);
-    const f = new Float32Array(this.passData, base, 4);
-    u[0] = phase;
-    u[1] = color;
-    f[2] = alpha;
-    u[3] = extra;
+    const o = slotIndex * (PASS_SLOT_BYTES / 4);
+    this.passU32[o] = phase;
+    this.passU32[o + 1] = color;
+    this.passF32[o + 2] = alpha;
+    this.passU32[o + 3] = extra;
   }
 
   /**
@@ -1384,11 +1400,14 @@ export class GpuBackend {
     const encColors = this.encColors;
 
     // ---- Pass uniform slots ----
+    // One generic, one per colouring round, the colour cap, then one per
+    // iteration and one per (iteration, colour).
+    const colorRounds = this.colorRounds;
+    this._ensurePassSlots(2 + colorRounds + totalIterations * (1 + encColors));
     let slot = 0;
     const S_GENERIC = slot;
     this._passSlot(slot++, 0, 0, 0, 0);
     const S_JACOBI = slot;
-    const colorRounds = this.colorRounds;
     for (let k = 0; k < colorRounds; k++) this._passSlot(slot++, k, 0, 0, 0);
     const S_COLORCAP = slot;
     // Odd refinement counts leave their result in color buffer B; even counts

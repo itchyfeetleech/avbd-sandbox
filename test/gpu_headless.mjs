@@ -210,6 +210,41 @@ if (!only || only === 'sanity') {
       `${sunk.length} of ${dyn.length} bodies below z = 0.2`
     );
   }
+
+  {
+    // Every dispatch reads its own uniform slot, one per (iteration, colour).
+    // The slot buffer used to be a fixed 4096 entries, so a long enough solve
+    // threw in the middle of encoding. Growing it replaces the buffer while
+    // earlier steps may still be in flight, so grow it mid-run.
+    const solver = new Solver();
+    solver.defaultParams();
+    solver.iterations = 10;
+    GROUND(solver);
+    new Rigid(solver, [1, 1, 1], 1, 0.5, [0, 0, 0.5]);
+    backend.topologyDirty = true;
+    backend.pack(solver);
+    const slotsBefore = backend.maxPassSlots;
+    let thrown = null;
+    backend.device.pushErrorScope?.('validation');
+    try {
+      for (let i = 0; i < 4; i++) backend.step(solver);
+      // Enough to overflow even at the fewest colours a step encodes (three).
+      solver.iterations = Math.ceil(slotsBefore / 4) + 1;
+      for (let i = 0; i < 4; i++) backend.step(solver);
+    } catch (e) {
+      thrown = e;
+    }
+    const gpuError = await backend.device.popErrorScope?.();
+    await backend.idle();
+    const { data, layout } = await backend.readState();
+    const z = data[layout.body.bPos + 4 + 2];
+    check(
+      'a solve longer than the uniform-slot budget grows it instead of throwing',
+      !thrown && !gpuError && backend.maxPassSlots > slotsBefore && z > 0.35 && z < 0.65,
+      `${thrown?.message ?? gpuError?.message ?? 'no error'}; ` +
+        `slots ${slotsBefore} -> ${backend.maxPassSlots}; resting z = ${z}`
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
