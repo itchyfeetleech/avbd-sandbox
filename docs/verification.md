@@ -5,24 +5,28 @@
 ## The suite
 
 ```bash
+npm test                              # every Node-only check below, summarized
+npm run test:quick                    # ...without the two one-minute suites
+```
+
+```bash
 bash test/parity/build_reference.sh   # fetch + compile the authors' solver
 node test/parity/run_parity.mjs       # diff full trajectories, shipped and demo configs
 node test/parity/run_parity.mjs --attribute   # ...and which feature causes which divergence
 node test/analytic.mjs                # closed-form physics oracles
-node test/gym.mjs                     # score every variant over the zoo, with oracles
 node test/convergence.mjs             # settled penetration and energy residuals
 node test/pacing.mjs                  # fixed-timestep loop at every refresh rate
 node test/smoke.mjs                   # every scene stays finite and stable
 node test/spheres.mjs                 # sphere mass, curved contacts and settling
-node test/soft_objects.mjs            # fabric/rope topology, scaling and clearing
-node test/spawn_patterns.mjs          # contact-free structured spawn recipes
+node test/soft_objects.mjs            # fabric/rope topology, scaling, clearance, clearing
+node test/spawn_patterns.mjs          # contact-free spawn recipes, above the surface
 node test/fabric_controls.mjs         # fabric pin/tear UI-to-spawner contract
 node test/fabric_render.mjs           # filled topology, node hiding and visual tears
 node test/render_shapes.mjs           # sphere meshes and split-draw contracts
 node test/killbox.mjs                 # out-of-world culling rules
-node test/manifold_width.mjs          # contacts-per-manifold distribution
 node test/gpu_topology_contract.mjs   # no-step GPU topology flush contract
 node test/bundle.mjs                  # standalone standards-mode release artifact
+node test/serve.mjs                   # dev server confinement and report endpoint
 node tools/gputest.mjs                # GPU backend under Deno (wgpu, Naga)
 node tools/browsertest.mjs --headless # GPU backend in headless Chrome (Dawn, Tint)
 node tools/browsertest.mjs            # GPU backend in a real browser, real driver
@@ -30,12 +34,25 @@ node tools/check-syntax.mjs           # parse all sources as ES modules
 node tools/check-wgsl.mjs             # WGSL lint + host/shader agreement
 ```
 
+Measurements rather than checks: they print numbers and always exit 0.
+
+```bash
+node test/gym.mjs                     # score every variant over the zoo, with oracles
+node test/refine.mjs                  # timestep refinement per solver variant
+node test/manifold_width.mjs          # contacts-per-manifold distribution
+```
+
 Apart from the parity reference build, the Deno GPU run and the browser runs, every
-check needs only Node.
+check needs only Node. CI (`.github/workflows/ci.yml`) runs all of them except the
+real-driver run on every push.
 
 `tools/gputest.mjs` needs a [Deno](https://deno.land) runtime, whose WebGPU is wgpu; it
 finds one on `PATH`, at `~/.deno/bin/deno`, or at `$DENO`. On a machine without a Vulkan
-driver, `--swiftshader` runs it on the SwiftShader device that Chrome ships.
+driver, install Mesa's lavapipe or pass `--swiftshader` to use the SwiftShader device
+that Chrome ships.
+
+The parity build fetches the authors' repository at a pinned commit; set
+`AVBD_REF3D_COMMIT` to try another, or `AVBD_REF3D_DIR` to use a local copy.
 
 ## Parity against the authors' implementation
 

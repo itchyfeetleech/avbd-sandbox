@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node:
+    name: Node suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Lint, unit, scene and solver checks
+        run: node tools/test.mjs
+
+  parity:
+    name: Parity with the authors' solver
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build the reference solver
+        run: bash test/parity/build_reference.sh
+      - name: Compare trajectories
+        run: node test/parity/run_parity.mjs
+
+  gpu-chrome:
+    # Dawn and Tint. Tint rejects some WGSL that Naga accepts, so this is the
+    # run that catches a shader Chrome cannot compile.
+    name: GPU in headless Chrome (Dawn, SwiftShader)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Backend self-test
+        run: node tools/browsertest.mjs --headless
+      - name: GPU against CPU
+        run: node tools/browsertest.mjs --headless --page=gputest
+      - name: Application shell
+        run: node tools/browsertest.mjs --headless --health
+
+  gpu-deno:
+    # wgpu and Naga, on Mesa's software Vulkan driver.
+    name: GPU under Deno (wgpu, lavapipe)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.5.6
+      - name: Install a software Vulkan driver
+        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers
+      - name: Headless GPU suite
+        run: node tools/gputest.mjs

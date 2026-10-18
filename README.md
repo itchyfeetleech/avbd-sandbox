@@ -74,6 +74,9 @@ node tools/bundle.mjs
 # writes dist/avbd-sandbox.html
 ```
 
+`npm test` runs the checks that need only Node; [Verification](docs/verification.md)
+covers the rest, including the GPU runs that CI makes in headless Chrome and Deno.
+
 ## Using the sandbox
 
 | Panel | What it holds |

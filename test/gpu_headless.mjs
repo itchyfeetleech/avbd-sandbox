@@ -45,6 +45,15 @@ const CONTACTS_PER_SLOT = (SLOT_STRIDE - SLOT_HEADER) / CONTACT_STRIDE;
 const MAX_CHAIN = Math.ceil(MAX_CONTACTS_PER_MANIFOLD / CONTACTS_PER_SLOT);
 
 const only = (globalThis.Deno?.args ?? []).find((a) => a.startsWith('--only='))?.slice(7);
+const SECTIONS = [
+  'sanity', 'broadphase', 'spheres', 'fabric', 'chain', 'warmstart', 'manifold', 'lifecycle',
+  'topology', 'colouring', 'friction', 'materials', 'offsets', 'profile', 'parity',
+];
+if (only && !SECTIONS.includes(only)) {
+  // A typo would otherwise run only the compile checks and report success.
+  console.log(`Unknown --only=${only}; expected one of ${SECTIONS.join(', ')}.`);
+  globalThis.Deno?.exit(2);
+}
 
 let failures = 0;
 function check(name, ok, detail = '') {
@@ -54,7 +63,8 @@ function check(name, ok, detail = '') {
 
 if (typeof navigator === 'undefined' || !navigator.gpu) {
   console.log('SKIP  no WebGPU in this runtime — run under Deno with --unstable-webgpu');
-  globalThis.Deno?.exit(0);
+  // In CI a missing WebGPU means a misconfigured job, not a pass.
+  globalThis.Deno?.exit(globalThis.Deno?.env.get('CI') ? 1 : 0);
 }
 
 // ---------------------------------------------------------------------------

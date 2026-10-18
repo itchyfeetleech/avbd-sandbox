@@ -178,8 +178,10 @@ export function launchBrowser(browser, url, {
         '--use-angle=swiftshader',
       );
     }
-    // Chrome refuses to start as root with its sandbox on (containers, CI).
-    if (process.getuid?.() === 0) args.push('--no-sandbox');
+    // Chrome refuses to start as root with its sandbox on (containers), and CI
+    // runners may not grant the user namespaces the sandbox needs. Both are
+    // disposable machines loading this repository's own pages.
+    if (process.getuid?.() === 0 || process.env.CI) args.push('--no-sandbox');
   }
 
   const child = spawn(browser, [...args, url], { stdio: 'ignore' });

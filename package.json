@@ -1,0 +1,20 @@
+{
+  "name": "avbd-sandbox",
+  "private": true,
+  "description": "Augmented Vertex Block Descent in the browser: an f64 CPU engine and a WebGPU backend behind one scene graph.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "scripts": {
+    "start": "node tools/serve.mjs",
+    "bundle": "node tools/bundle.mjs",
+    "lint": "node tools/check-syntax.mjs && node tools/check-wgsl.mjs",
+    "test": "node tools/test.mjs",
+    "test:quick": "node tools/test.mjs --quick",
+    "test:parity": "bash test/parity/build_reference.sh && node test/parity/run_parity.mjs",
+    "test:gpu": "node tools/gputest.mjs",
+    "test:browser": "node tools/browsertest.mjs --headless && node tools/browsertest.mjs --headless --page=gputest"
+  }
+}
