@@ -275,7 +275,9 @@ fn slotNewBase() -> u32 {
 }
 
 fn contactHash(idA: u32, idB: u32) -> u32 {
-  var h = idA * 0x9e3779b9u ^ idB * 0x85ebca6bu;
+  // WGSL forbids mixing bitwise and arithmetic operators without parentheses.
+  // Naga accepts the unparenthesized form; Tint (Chrome) rejects the module.
+  var h = (idA * 0x9e3779b9u) ^ (idB * 0x85ebca6bu);
   h = (h ^ (h >> 16u)) * 0x7feb352du;
   h = (h ^ (h >> 15u)) * 0x846ca68bu;
   return h ^ (h >> 16u);
@@ -560,7 +562,7 @@ fn supportPoint(box: ptr<function, OBB>, dir: vec3f) -> vec3f {
  * cyclic reorder of the clipped polygon.
  */
 fn featureHash(context: u32, lineage: u32) -> u32 {
-  var h = context * 0x9e3779b9u ^ lineage * 0x85ebca6bu;
+  var h = (context * 0x9e3779b9u) ^ (lineage * 0x85ebca6bu);
   h = h ^ (h >> 16u);
   h = h * 0x7feb352du;
   h = h ^ (h >> 15u);

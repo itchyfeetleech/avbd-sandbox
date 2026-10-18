@@ -1,15 +1,20 @@
 /**
- * Lint the WGSL sources for reserved keywords used as identifiers.
+ * Lint the WGSL sources for mistakes that only a browser would otherwise find.
  *
- * WGSL reserves a large list of words for future use — `self`, `target`,
- * `match`, `filter`, `shared` and many more — and using one as a variable or
- * parameter name is a hard compile error. That error only surfaces inside a
- * browser with a GPU, which is a slow place to discover a typo, so this scans
- * the shader strings directly.
+ * Reserved words. WGSL reserves a large list of words for future use — `self`,
+ * `target`, `match`, `filter`, `shared` and many more — and using one as a
+ * variable or parameter name is a hard compile error. This is a lexical check:
+ * it flags a reserved word wherever it appears as a declaration name or
+ * parameter, which is where these mistakes actually happen.
  *
- * It is a lexical check, not a parser: it flags a reserved word wherever it
- * appears as a declaration name or parameter, which is where these mistakes
- * actually happen.
+ * Operator grammar. WGSL has no C-style precedence between unrelated operator
+ * families. The operands of `&`, `|`, `^`, `<<` and `>>` must be unary
+ * expressions, `&&` and `||` cannot be mixed, and comparisons do not chain, so
+ * `a * b ^ c` needs parentheses. Implementations disagree on enforcing this:
+ * Naga (Firefox, Deno) accepts the unparenthesized form and Tint (Chrome)
+ * rejects the whole module, which is how a shader that passed every Gecko run
+ * shipped with a GPU backend that could not start in Chrome. This check
+ * tokenizes the shaders and applies the grammar's rules per bracket level.
  *
  *   node tools/check-wgsl.mjs
  */
@@ -63,11 +68,226 @@ function scan(label, wgsl) {
   });
 }
 
+// --- Operator grammar --------------------------------------------------------
+
+const TOKEN = new RegExp(
+  [
+    String.raw`(?<space>\s+)`,
+    String.raw`(?<line>//[^\n]*)`,
+    String.raw`(?<block>/\*)`,
+    String.raw`(?<number>(?:0[xX][0-9a-fA-F.]+(?:[pP][+-]?\d+)?|\d+\.?\d*(?:[eE][+-]?\d+)?|\.\d+(?:[eE][+-]?\d+)?)[iufh]?)`,
+    String.raw`(?<ident>[A-Za-z_]\w*)`,
+    String.raw`(?<op>>>=|<<=|->|&&|\|\||<<|>>|<=|>=|==|!=|\+\+|--|[-+*/%&|^]=|[-+*/%&|^~!<>=()[\]{},;:.@])`,
+  ].join('|'),
+  'y'
+);
+
+/** Predeclared identifiers that take a template list, `vec3<f32>` and so on. */
+const TEMPLATED = /^(?:var|vec[234]|mat[234]x[234]|array|atomic|ptr|bitcast|texture_\w+|binding_array)$/;
+const STATEMENT_KEYWORDS = new Set(
+  'alias break case const const_assert continue continuing default diagnostic discard else enable fn for if let loop override requires return struct switch var while'
+    .split(' ')
+);
+const BOUNDARY_OPS = new Set([
+  ';', ',', '{', '}', ':', '=', '->', '@',
+  '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>=',
+]);
+const BINARY_OPS = new Set([
+  '+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>',
+  '<', '>', '<=', '>=', '==', '!=', '&&', '||',
+]);
+const BITWISE_OPS = new Set(['&', '|', '^']);
+const SHIFT_OPS = new Set(['<<', '>>']);
+const RELATIONAL_OPS = new Set(['<', '>', '<=', '>=', '==', '!=']);
+const LOGICAL_OPS = new Set(['&&', '||']);
+
+function tokenize(wgsl) {
+  const tokens = [];
+  let line = 1;
+  let i = 0;
+  while (i < wgsl.length) {
+    TOKEN.lastIndex = i;
+    const m = TOKEN.exec(wgsl);
+    if (!m) throw new Error(`untokenizable WGSL at line ${line}: ${wgsl.slice(i, i + 20)}`);
+    const text = m[0];
+    if (m.groups.block) {
+      // Block comments nest in WGSL.
+      let depth = 0;
+      let j = i;
+      do {
+        if (wgsl.startsWith('/*', j)) { depth++; j += 2; }
+        else if (wgsl.startsWith('*/', j)) { depth--; j += 2; }
+        else j++;
+      } while (depth > 0 && j < wgsl.length);
+      line += (wgsl.slice(i, j).match(/\n/g) || []).length;
+      i = j;
+      continue;
+    }
+    if (!m.groups.space && !m.groups.line) {
+      const kind = m.groups.number ? 'number' : m.groups.ident ? 'ident' : 'op';
+      tokens.push({ kind, text, line });
+    }
+    line += (text.match(/\n/g) || []).length;
+    i += text.length;
+  }
+  return tokens;
+}
+
+/** Why a run of binary operators at one bracket level is not valid WGSL. */
+function grammarProblem(ops) {
+  const distinct = (list) => [...new Set(list)].join(' ');
+  const bitwise = ops.find((o) => BITWISE_OPS.has(o));
+  if (bitwise) {
+    const others = ops.filter((o) => o !== bitwise);
+    return others.length
+      ? `'${bitwise}' mixed with ${distinct(others)}: operands of '${bitwise}' must be unary expressions`
+      : null;
+  }
+  if (ops.includes('&&') && ops.includes('||')) return `'&&' mixed with '||'`;
+  const segments = [[]];
+  for (const o of ops) {
+    if (LOGICAL_OPS.has(o)) segments.push([]);
+    else segments[segments.length - 1].push(o);
+  }
+  for (const segment of segments) {
+    const relational = segment.filter((o) => RELATIONAL_OPS.has(o));
+    if (relational.length > 1) {
+      return `chained comparison ${relational.join(' ')}: WGSL comparisons do not associate`;
+    }
+    const operands = [[]];
+    for (const o of segment) {
+      if (RELATIONAL_OPS.has(o)) operands.push([]);
+      else operands[operands.length - 1].push(o);
+    }
+    for (const operand of operands) {
+      if (operand.some((o) => SHIFT_OPS.has(o)) && operand.length > 1) {
+        const others = operand.filter((o) => !SHIFT_OPS.has(o));
+        return `shift mixed with ${others.length ? distinct(others) : 'another shift'}: ` +
+          'shift operands must be unary expressions';
+      }
+    }
+  }
+  return null;
+}
+
+/** @returns {{line: number, problem: string}[]} */
+function operatorGrammarProblems(wgsl) {
+  const tokens = tokenize(wgsl);
+  const problems = [];
+  // One region per open bracket; a region collects the binary operators of a
+  // single expression at that level and is checked when a boundary closes it.
+  const stack = [{ ops: [], line: 0 }];
+  const close = () => {
+    const region = stack[stack.length - 1];
+    const problem = region.ops.length > 1 ? grammarProblem(region.ops) : null;
+    if (problem) problems.push({ line: region.line, problem });
+    region.ops = [];
+  };
+  let operandEnded = false;
+
+  for (let t = 0; t < tokens.length; t++) {
+    const tok = tokens[t];
+    if (tok.kind === 'ident' && TEMPLATED.test(tok.text) && tokens[t + 1]?.text === '<') {
+      // Skip the template list. `>>` closes two lists at once.
+      let depth = 0;
+      for (t++; t < tokens.length; t++) {
+        const s = tokens[t].text;
+        if (s === '<') depth++;
+        else if (s === '>') depth--;
+        else if (s === '>>') depth -= 2;
+        if (depth <= 0) break;
+      }
+      operandEnded = tok.text !== 'var';
+      continue;
+    }
+    if (tok.kind === 'ident' && STATEMENT_KEYWORDS.has(tok.text)) {
+      close();
+      operandEnded = false;
+      continue;
+    }
+    if (tok.kind !== 'op') {
+      operandEnded = true;
+      continue;
+    }
+    const s = tok.text;
+    if (s === '(' || s === '[') {
+      stack.push({ ops: [], line: tok.line });
+      operandEnded = false;
+    } else if (s === ')' || s === ']') {
+      close();
+      if (stack.length > 1) stack.pop();
+      operandEnded = true;
+    } else if (BOUNDARY_OPS.has(s)) {
+      close();
+      operandEnded = false;
+    } else if (BINARY_OPS.has(s) && operandEnded) {
+      const region = stack[stack.length - 1];
+      if (region.ops.length === 0) region.line = tok.line;
+      region.ops.push(s);
+      operandEnded = false;
+    } else if (s === '++' || s === '--' || s === '.') {
+      // Postfix increments keep the operand; member access continues it.
+      operandEnded = s !== '.';
+    } else {
+      operandEnded = false; // unary - ! ~ * &
+    }
+  }
+  close();
+  return problems;
+}
+
+// The checker guards itself: each of these must be flagged, and the valid
+// forms must not be, or the scan of the real shaders below proves nothing.
+const MUST_FAIL = [
+  'let h = a * 0x9e3779b9u ^ b * 0x85ebca6bu;',
+  'let k = a + b << 2u;',
+  'let k = a << b + 1u;',
+  'let k = a << 1u << 2u;',
+  'let ok = a && b || c;',
+  'let ok = a < b < c;',
+  'let ok = (f & 4u) == 0u && a & b != 0u;',
+  'x = a | b & c;',
+];
+const MUST_PASS = [
+  'let h = (a * 0x9e3779b9u) ^ (b * 0x85ebca6bu);',
+  'let k = (min(a, b) << 16u) | max(a, b);',
+  'if ((GU.flags & FLAG) == 0u && i < n) { used = used | (1u << c); }',
+  'var<storage, read_write> B: array<atomic<u32>>;',
+  'let v = bitcast<u32>(x) >> 16u;',
+  'let c = a - -b * (*p).x + vec3<f32>(1.0) * -2.0;',
+  'for (var i = 0u; i < n; i++) { atomicAdd(&A[i * 3u + 2u], 1u); }',
+  'let ok = a << 2u < b + c;',
+  'fn f(p: ptr<function, array<vec3f, 16>>) -> vec3f { return (*p)[0] * 2.0; }',
+];
+for (const snippet of MUST_FAIL) {
+  if (operatorGrammarProblems(snippet).length === 0) {
+    console.log(`  operator-grammar check failed to flag: ${snippet}`);
+    findings++;
+  }
+}
+for (const snippet of MUST_PASS) {
+  for (const { problem } of operatorGrammarProblems(snippet)) {
+    console.log(`  operator-grammar check wrongly flagged: ${snippet}\n      ${problem}`);
+    findings++;
+  }
+}
+
+function scanGrammar(label, wgsl) {
+  const lines = wgsl.split('\n');
+  for (const { line, problem } of operatorGrammarProblems(wgsl)) {
+    console.log(`  ${label}:${line}  ${problem}`);
+    console.log(`      ${(lines[line - 1] ?? '').trim().slice(0, 110)}`);
+    findings++;
+  }
+}
+
 const { SHADER_SOURCE } = await import(join(ROOT, 'src/physics/gpu/shaders.js'));
 scan('gpu/shaders.js', SHADER_SOURCE);
+scanGrammar('gpu/shaders.js', SHADER_SOURCE);
 
 const { RENDER_SHADER } = await import(join(ROOT, 'src/render/renderer_webgpu.js'));
 scan('renderer_webgpu.js', RENDER_SHADER);
+scanGrammar('renderer_webgpu.js', RENDER_SHADER);
 
 // --- Host/shader agreement --------------------------------------------------
 // Both of these drift silently rather than failing loudly: an unregistered
@@ -139,7 +359,8 @@ if (findings) {
   process.exit(1);
 }
 console.log(
-  'WGSL: no reserved keywords used as identifiers; ' +
+  'WGSL: no reserved keywords used as identifiers; operator grammar valid ' +
+    `(${MUST_FAIL.length + MUST_PASS.length} self-checks); ` +
     `${entryPoints.size} entry points and ${declared.size} uniforms agree with the host; ` +
     `${flagBits.length} flag bits distinct, ${declaredFlags} declared in the shader.`
 );
