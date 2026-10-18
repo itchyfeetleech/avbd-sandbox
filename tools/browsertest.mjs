@@ -1,32 +1,34 @@
 /**
- * Run the GPU backend checks in a real browser, on the real driver, unattended.
+ * Run the GPU backend checks in a browser, unattended.
  *
  * WHY THIS EXISTS. `tools/gputest.mjs` runs the same assertions under Deno,
- * whose adapter here is lavapipe — a software rasteriser. It is single
+ * whose WebGPU is wgpu on a software Vulkan device. That device is single
  * threaded, IEEE-exact and has no memory-bandwidth wall, so an entire class of
  * fault is invisible to it: driver quirks, races between workgroups, and
  * anything timing dependent. This project has already lost a day to a
  * regression that passed every software check and broke instantly on hardware.
  * So: drive the real browser.
  *
- *   node tools/browsertest.mjs [--keep-open] [--health] [--allow-hidden]
- *     [--expect-scene=id] [--url=...] [--browser=/path/to/exe]
+ *   node tools/browsertest.mjs [--headless] [--page=selftest|gputest|health]
+ *     [--keep-open] [--allow-hidden] [--expect-scene=id] [--url=...]
+ *     [--browser=/path/to/exe] [--port=8123] [--timeout=seconds]
  *
- * Under WSL the browser is a Windows executable, reached through /mnt/c, and it
- * talks back to the Node server over 127.0.0.1 (mirrored networking). A
- * throwaway profile is created with the prefs WebGPU needs, because a fresh
- * Firefox profile does NOT enable it by default — the first attempt at this
- * returned a null adapter for exactly that reason.
+ * Pages:
+ *   selftest  the backend assertions in src/app/gpuchecks.js (default)
+ *   gputest   the GPU-vs-CPU state comparison (src/app/gputest.js)
+ *   health    the sandbox itself, on the CPU engine and WebGL2 (`--health`)
  *
- * Headless is not an option: headless Firefox exposes `navigator.gpu` but
- * `requestAdapter()` resolves to null, since there is no GPU process. So a real
- * window opens briefly and is closed again on the way out.
+ * `--headless` runs Chrome or Chromium on SwiftShader instead of a window on
+ * the real driver; see tools/browser.mjs for what that does and does not
+ * cover. It is what CI runs. It is also the only one of these runs that uses
+ * Chrome's WGSL compiler, Tint, which rejects some shaders Naga accepts.
  */
 
-import { spawn, execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { writeFileSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { findBrowser, launchBrowser } from './browser.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const REPORT = join(ROOT, 'test', 'gpu-report.json');
@@ -35,75 +37,31 @@ const arg = (name, fallback) =>
   argv.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ?? fallback;
 
 const PORT = Number(arg('port', 8123));
-const HEALTH = argv.includes('--health');
+const HEADLESS = argv.includes('--headless');
+const PAGE = argv.includes('--health') ? 'health' : arg('page', 'selftest');
 const ALLOW_HIDDEN = argv.includes('--allow-hidden');
 const EXPECT_SCENE = arg('expect-scene', '');
-const URL_ = arg(
-  'url',
-  HEALTH
-    ? `http://127.0.0.1:${PORT}/?nogpu=1&report=1`
-    : `http://127.0.0.1:${PORT}/?selftest=1`
-);
+const PAGE_URLS = {
+  selftest: `http://127.0.0.1:${PORT}/?selftest=1`,
+  gputest: `http://127.0.0.1:${PORT}/?gputest=1`,
+  health: `http://127.0.0.1:${PORT}/?nogpu=1&report=1`,
+};
+if (!PAGE_URLS[PAGE]) {
+  console.error(`Unknown --page=${PAGE}; expected one of ${Object.keys(PAGE_URLS).join(', ')}.`);
+  process.exit(2);
+}
+const URL_ = arg('url', PAGE_URLS[PAGE]);
 const KEEP = argv.includes('--keep-open');
 const TIMEOUT_MS = Number(arg('timeout', 240)) * 1000;
 
 // --- locate a browser -------------------------------------------------------
-const CANDIDATES = [
-  arg('browser', process.env.BROWSER),
-  '/mnt/c/Program Files/Zen Browser/zen.exe',
-  '/mnt/c/Program Files/Mozilla Firefox/firefox.exe',
-  '/mnt/c/Program Files (x86)/Mozilla Firefox/firefox.exe',
-  '/mnt/c/Program Files/Google/Chrome/Application/chrome.exe',
-  '/mnt/c/Program Files/Microsoft/Edge/Application/msedge.exe',
-  '/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
-].filter(Boolean);
-
-const browser = CANDIDATES.find((p) => existsSync(p));
+const { browser, looked } = findBrowser({ explicit: arg('browser', ''), headless: HEADLESS });
 if (!browser) {
   console.error(
-    'No browser found. Pass --browser=/path/to/exe or set $BROWSER.\n' +
-      'Looked in:\n  ' + CANDIDATES.join('\n  ')
+    `No ${HEADLESS ? 'Chrome or Chromium ' : ''}browser found. Pass --browser=/path/to/exe ` +
+      'or set $BROWSER.\nLooked in:\n  ' + looked.join('\n  ')
   );
   process.exit(2);
-}
-const isGecko = /firefox|zen/i.test(browser);
-
-// --- throwaway profile with the prefs WebGPU needs --------------------------
-let profileArgs = [];
-if (isGecko) {
-  const winLocal = execFileSync('cmd.exe', ['/c', 'echo %LOCALAPPDATA%'], { encoding: 'utf8' })
-    .trim()
-    .replace(/\r/g, '');
-  const winProfile = `${winLocal}\\avbd-selftest-profile`;
-  const wslProfile = '/mnt/' + winProfile[0].toLowerCase() + winProfile.slice(2).replace(/\\/g, '/');
-  mkdirSync(wslProfile, { recursive: true });
-  writeFileSync(
-    join(wslProfile, 'user.js'),
-    [
-      // A fresh profile does not enable WebGPU. Without these the adapter is null.
-      'user_pref("dom.webgpu.enabled", true);',
-      'user_pref("dom.webgpu.workers.enabled", true);',
-      'user_pref("gfx.webrender.all", true);',
-      'user_pref("layers.acceleration.force-enabled", true);',
-      // Keep the throwaway profile quiet: no first-run pages, no crash restore,
-      // no telemetry prompts stealing focus from the test page.
-      'user_pref("browser.shell.checkDefaultBrowser", false);',
-      'user_pref("browser.aboutwelcome.enabled", false);',
-      'user_pref("browser.startup.homepage_override.mstone", "ignore");',
-      'user_pref("browser.sessionstore.resume_from_crash", false);',
-      'user_pref("datareporting.policy.dataSubmissionEnabled", false);',
-      'user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);',
-    ].join('\n') + '\n'
-  );
-  profileArgs = ['--no-remote', '--profile', winProfile, '--width', '700', '--height', '520'];
-} else {
-  profileArgs = [
-    '--enable-unsafe-webgpu',
-    '--enable-features=Vulkan',
-    '--no-first-run',
-    '--no-default-browser-check',
-    `--user-data-dir=${process.env.TEMP ?? '/tmp'}\\avbd-selftest-profile`,
-  ];
 }
 
 // --- server -----------------------------------------------------------------
@@ -133,11 +91,23 @@ if (!(await reachable())) {
 
 // --- run --------------------------------------------------------------------
 writeFileSync(REPORT, JSON.stringify({ waiting: true }));
-console.log(`browser: ${browser}`);
+console.log(`browser: ${browser}${HEADLESS ? ' (headless, SwiftShader)' : ''}`);
 console.log(`url:     ${URL_}\n`);
 
-const child = spawn(browser, [...profileArgs, URL_], { stdio: 'ignore' });
-child.on('error', (err) => {
+let launched;
+try {
+  launched = launchBrowser(browser, URL_, {
+    headless: HEADLESS,
+    profileName: 'avbd-selftest-profile',
+    windowTitles: ['AVBD SELFTEST*', 'SELFTEST *', 'AVBD Playground*', 'Open Zen in Troubleshoot Mode?'],
+    size: [700, 520],
+  });
+} catch (err) {
+  console.error(err.message);
+  server?.kill();
+  process.exit(2);
+}
+launched.child.on('error', (err) => {
   console.error(`Could not launch the browser: ${err.message}`);
   process.exit(2);
 });
@@ -157,55 +127,36 @@ const healthReportReady = (value) => {
     value.bodies > 0 &&
     (value.renderer === 'webgl2' || value.renderer === 'webgpu');
   const expectedSceneReady = !EXPECT_SCENE || value.scene === EXPECT_SCENE;
-  return HEALTH && expectedSceneReady && (rendered || initializedWhileHidden);
+  return expectedSceneReady && (rendered || initializedWhileHidden);
 };
+// Only the final POST carries the verdict; earlier ones are progress beacons,
+// kept so that a hang still says how far it reached.
+const finalReport = (value) =>
+  !!value.error ||
+  (PAGE === 'selftest' && !!value.checks) ||
+  (PAGE === 'gputest' && Array.isArray(value.results)) ||
+  (PAGE === 'health' && healthReportReady(value));
 
 const started = Date.now();
 let report = readReport();
 while (Date.now() - started < TIMEOUT_MS) {
   await new Promise((r) => setTimeout(r, 1000));
   report = readReport();
-  // Only the final POST carries `checks` (or a fatal `error`); the earlier ones
-  // are progress beacons, kept so a hang still says how far it reached.
-  if (report.checks || report.error || healthReportReady(report)) break;
+  if (finalReport(report)) break;
 }
 
 function cleanup() {
-  if (!KEEP) {
-    try {
-      if (isGecko && browser.startsWith('/mnt/c/')) {
-        // Close only the uniquely titled self-test window, and do it through
-        // the normal window-close path so Gecko records a clean shutdown. The
-        // previous forceful process filter both matched every Zen session and
-        // made the throwaway profile open in Troubleshoot Mode next run.
-        execFileSync('powershell.exe', [
-          '-NoProfile', '-Command',
-          'Get-Process zen,firefox -ErrorAction SilentlyContinue | ' +
-          "Where-Object { $_.MainWindowTitle -like 'AVBD SELFTEST*' -or " +
-          "$_.MainWindowTitle -like 'SELFTEST *' -or " +
-          "$_.MainWindowTitle -like 'AVBD Playground*' -or " +
-          "$_.MainWindowTitle -eq 'Open Zen in Troubleshoot Mode?' } | " +
-          'ForEach-Object { $_.CloseMainWindow() | Out-Null }',
-        ], { stdio: 'ignore' });
-      } else {
-        child.kill();
-      }
-    } catch { /* the browser may already be gone */ }
-  }
+  if (!KEEP) launched.close();
   server?.kill();
 }
 
-if (
-  !report.checks &&
-  !report.error &&
-  !healthReportReady(report)
-) {
+if (!finalReport(report)) {
   console.error(`Timed out after ${TIMEOUT_MS / 1000}s. Last beacon: ${JSON.stringify(report)}`);
   cleanup();
   process.exit(1);
 }
 
-if (HEALTH && !report.error) {
+if (PAGE === 'health' && !report.error) {
   console.log(report.framesRendered > 0
     ? `PASS  application rendered ${report.framesRendered} frames at ${report.fps} fps ` +
       `(${report.renderer}, ${report.backend}, ${report.bodies} bodies, ${report.scene})`
@@ -220,13 +171,33 @@ if (HEALTH && !report.error) {
 console.log(`adapter: ${report.adapter ?? 'unknown'}` +
   (report.hasTimestamps === undefined ? '' : `  (timestamp-query: ${report.hasTimestamps})`));
 console.log('');
-for (const c of report.checks ?? []) {
-  console.log(`${c.ok ? 'PASS' : 'FAIL'}  ${c.name}`);
-  if (!c.ok && c.detail) console.log(`        ${c.detail}`);
+
+let failures = report.error ? 1 : 0;
+if (PAGE === 'gputest') {
+  for (const result of report.results ?? []) {
+    const worst = Math.max(...result.steps.map((s) => s.maxErr));
+    console.log(`${result.pass ? 'PASS' : 'FAIL'}  GPU matches CPU — ${result.name}` +
+      `  (max relative error ${worst.toExponential(2)})`);
+    if (!result.pass) failures++;
+  }
+  const renderOk = report.renderShader === 'compiles';
+  console.log(`${renderOk ? 'PASS' : 'FAIL'}  the render module compiles`);
+  if (!renderOk) failures++;
+  if (report.shaderError) {
+    console.log(`\nERROR: ${report.shaderError}`);
+    failures++;
+  }
+  if (!report.results?.length) failures++;
+} else {
+  for (const c of report.checks ?? []) {
+    console.log(`${c.ok ? 'PASS' : 'FAIL'}  ${c.name}`);
+    if (!c.ok && c.detail) console.log(`        ${c.detail}`);
+    if (!c.ok) failures++;
+  }
 }
 if (report.error) console.log(`\nERROR: ${report.error}`);
 
-const failures = (report.checks ?? []).filter((c) => !c.ok).length + (report.error ? 1 : 0);
-console.log(failures ? `\n${failures} failure(s) on the real driver.` : '\nReal driver: GPU backend behaves correctly.');
+const where = HEADLESS ? 'Headless (SwiftShader)' : 'Real driver';
+console.log(failures ? `\n${failures} failure(s): ${where.toLowerCase()}.` : `\n${where}: GPU backend behaves correctly.`);
 cleanup();
 process.exit(failures ? 1 : 0);

@@ -6,7 +6,12 @@ Regenerates everything in [`docs/media`](../../docs/media) from the shipped engi
 node tools/capture/record.mjs                  # every shot
 node tools/capture/record.mjs --only=mega-wall # one shot
 node tools/capture/record.mjs --only=avalanche --probe=20,60,95
+node tools/capture/record.mjs --headless --only=breakable-wall  # no GPU needed
 ```
+
+`--headless` renders on SwiftShader in headless Chrome or Chromium (see
+[`tools/browser.mjs`](../browser.mjs)). The output is the same; the fifty-thousand-body
+shots just take a long time.
 
 `--probe=a,b,c` writes those frame indices of an animation as PNGs alongside the GIF,
 which is how the shot timings were tuned — when a projectile lands and when a structure
@@ -15,10 +20,8 @@ gives are otherwise guessed at from a file you cannot inspect a frame of.
 ## How it works
 
 `record.mjs` serves [`page.html`](page.html), opens a real browser at it, receives
-frames as they are rendered, and encodes PNG and GIF. A real browser is used for the
-same reason [`tools/browsertest.mjs`](../browsertest.mjs) uses one: the Deno adapter
-available here is a software rasteriser, and these scenes are fifty thousand bodies
-deep.
+frames as they are rendered, and encodes PNG and GIF. A real browser on the real GPU is
+the default because these scenes are fifty thousand bodies deep.
 
 Two things make the output reproducible in a way that screen-recording a window is not:
 

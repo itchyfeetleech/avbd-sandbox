@@ -23,14 +23,15 @@ node test/killbox.mjs                 # out-of-world culling rules
 node test/manifold_width.mjs          # contacts-per-manifold distribution
 node test/gpu_topology_contract.mjs   # no-step GPU topology flush contract
 node test/bundle.mjs                  # standalone standards-mode release artifact
-node tools/gputest.mjs                # GPU backend under Deno (software adapter)
+node tools/gputest.mjs                # GPU backend under Deno (wgpu, Naga)
+node tools/browsertest.mjs --headless # GPU backend in headless Chrome (Dawn, Tint)
 node tools/browsertest.mjs            # GPU backend in a real browser, real driver
 node tools/check-syntax.mjs           # parse all sources as ES modules
 node tools/check-wgsl.mjs             # WGSL lint + host/shader agreement
 ```
 
-Apart from the parity reference build, the Deno GPU run and the real-browser driver
-run, every check needs only Node.
+Apart from the parity reference build, the Deno GPU run and the browser runs, every
+check needs only Node.
 
 `tools/gputest.mjs` needs a [Deno](https://deno.land) runtime, whose WebGPU is wgpu; it
 finds one on `PATH`, at `~/.deno/bin/deno`, or at `$DENO`. On a machine without a Vulkan
@@ -157,19 +158,26 @@ GPU's color order on the CPU (legitimate, since bodies within one color share no
 so sequential and parallel execution of a color are the same computation) and compares
 full state. Typical agreement is `1e-6`–`1e-8`, i.e. f32 rounding.
 
-### Why a real browser too
+### Why a browser too
 
-`tools/browsertest.mjs` runs the **same assertions** (`src/app/gpuchecks.js`) on the
-actual driver, unattended: it starts the server, launches a browser at `/?selftest=1`
-with a throwaway profile, and reads the verdict the page POSTs back.
+`tools/browsertest.mjs` runs the **same assertions** (`src/app/gpuchecks.js`) in a
+browser, unattended: it starts the server, launches a browser at `/?selftest=1` with a
+throwaway profile, and reads the verdict the page POSTs back. `--page=gputest` runs the
+GPU-vs-CPU comparison the same way.
 
-This is not redundant with the Deno run. That adapter is a software rasteriser, so it is
-single threaded, IEEE-exact and has no bandwidth wall, and an entire class of fault is
-invisible to it. A regression that passed every software check and CPU parity, and broke
-instantly on hardware, is what this exists for.
+Two WebGPU implementations, two WGSL compilers. Deno's WebGPU is wgpu, which compiles
+with Naga; Chrome's is Dawn, which compiles with Tint, and the two disagree on what is
+valid. Naga accepted `a * k ^ b * k`, which WGSL forbids; Tint rejected the whole module,
+and for as long as that went unnoticed the GPU backend could not start in Chrome or Edge.
+`node tools/browsertest.mjs --headless` runs Chrome or Chromium with WebGPU on
+SwiftShader, needs no GPU or display, and is what CI runs.
 
-Headless is deliberately not used: headless Firefox exposes `navigator.gpu` but returns
-a null adapter, so a real window opens briefly.
+Neither replaces the real driver. Both software devices are single threaded, IEEE-exact
+and have no bandwidth wall, so an entire class of fault is invisible to them. A
+regression that passed every software check and CPU parity, and broke instantly on
+hardware, is what the windowed run exists for. It opens a real window briefly: headless
+Firefox exposes `navigator.gpu` but returns a null adapter, and a SwiftShader device is
+lost as soon as it presents to a canvas.
 
 ## Profiling
 
