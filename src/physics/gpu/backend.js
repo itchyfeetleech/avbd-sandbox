@@ -1021,8 +1021,11 @@ export class GpuBackend {
       consData[o + 24] = f.torqueArm;
       consData[o + 25] = f.stiffnessLin === Infinity ? 1 : 0;
       consData[o + 26] = f.stiffnessAng === Infinity ? 1 : 0;
-      consData[o + 27] = Math.min(f.stiffnessLin, 1e10);
-      consData[o + 28] = Math.min(f.stiffnessAng, 1e10);
+      // The material stiffness, kept finite for f32. The shaders cap the
+      // penalty at GU.penaltyMax too, as the CPU does, so a solver whose
+      // penaltyMax differs from the default is followed on both backends.
+      consData[o + 27] = Math.min(f.stiffnessLin, 3.4e38);
+      consData[o + 28] = Math.min(f.stiffnessAng, 3.4e38);
       consData[o + 29] = f.fracture === Infinity ? 3.4e37 : f.fracture * f.fracture;
       consData[o + 30] = f.broken ? 1 : 0;
     }

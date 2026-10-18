@@ -104,8 +104,8 @@ export const BS_EARLIER_REACH = 14;
 // [12..14] penaltyLin  [15..17] penaltyAng
 // [18..20] lambdaLin   [21..23] lambdaAng
 // [24] torqueArm   [25] hardLin (0/1)   [26] hardAng (0/1)
-// [27] clampLin = min(stiffLin, PENALTY_MAX)
-// [28] clampAng = min(stiffAng, PENALTY_MAX)
+// [27] stiffLin    [28] stiffAng   (material stiffness, finite in f32;
+//                                    the shaders also cap at GU.penaltyMax)
 // [29] fracture²   [30] broken (0/1)
 export const JOINT_STRIDE = 40;
 

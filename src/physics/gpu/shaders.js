@@ -1433,12 +1433,12 @@ fn prepare_joints(@builtin(global_invocation_id) gid: vec3u) {
   CONS[jb + 18u] = lamL.x; CONS[jb + 19u] = lamL.y; CONS[jb + 20u] = lamL.z;
   CONS[jb + 21u] = lamA.x; CONS[jb + 22u] = lamA.y; CONS[jb + 23u] = lamA.z;
 
-  let clampL = CONS[jb + 27u];
-  let clampA = CONS[jb + 28u];
+  let stiffL = CONS[jb + 27u];
+  let stiffA = CONS[jb + 28u];
   var penL = vec3f(CONS[jb + 12u], CONS[jb + 13u], CONS[jb + 14u]);
   var penA = vec3f(CONS[jb + 15u], CONS[jb + 16u], CONS[jb + 17u]);
-  penL = min(clamp(penL * GU.gamma, vec3f(GU.penaltyMin), vec3f(GU.penaltyMax)), vec3f(clampL));
-  penA = min(clamp(penA * GU.gamma, vec3f(GU.penaltyMin), vec3f(GU.penaltyMax)), vec3f(clampA));
+  penL = min(clamp(penL * GU.gamma, vec3f(GU.penaltyMin), vec3f(GU.penaltyMax)), vec3f(stiffL));
+  penA = min(clamp(penA * GU.gamma, vec3f(GU.penaltyMin), vec3f(GU.penaltyMax)), vec3f(stiffA));
   CONS[jb + 12u] = penL.x; CONS[jb + 13u] = penL.y; CONS[jb + 14u] = penL.z;
   CONS[jb + 15u] = penA.x; CONS[jb + 16u] = penA.y; CONS[jb + 17u] = penA.z;
 }
@@ -2272,7 +2272,8 @@ fn dual_joints(@builtin(global_invocation_id) gid: vec3u) {
       CONS[jb + 18u] = lamL.x; CONS[jb + 19u] = lamL.y; CONS[jb + 20u] = lamL.z;
       statMaxF32(${STAT_MAX_LAMBDA}u, length(lamL));
     }
-    penL = min(penL + abs(C) * GU.betaLin, vec3f(CONS[jb + 27u]));
+    // k = min(k*, k + β|C|, k_max)   (Equations 12 and 16)
+    penL = min(penL + abs(C) * GU.betaLin, vec3f(min(CONS[jb + 27u], GU.penaltyMax)));
     CONS[jb + 12u] = penL.x; CONS[jb + 13u] = penL.y; CONS[jb + 14u] = penL.z;
     statMaxF32(${STAT_MAX_PEN}u, length(C));
     statMaxF32(${STAT_MAX_PENALTY}u, max(penL.x, max(penL.y, penL.z)));
@@ -2287,7 +2288,7 @@ fn dual_joints(@builtin(global_invocation_id) gid: vec3u) {
       let lamA = penA * C + vec3f(CONS[jb + 21u], CONS[jb + 22u], CONS[jb + 23u]);
       CONS[jb + 21u] = lamA.x; CONS[jb + 22u] = lamA.y; CONS[jb + 23u] = lamA.z;
     }
-    penA = min(penA + abs(C) * GU.betaAng, vec3f(CONS[jb + 28u]));
+    penA = min(penA + abs(C) * GU.betaAng, vec3f(min(CONS[jb + 28u], GU.penaltyMax)));
     CONS[jb + 15u] = penA.x; CONS[jb + 16u] = penA.y; CONS[jb + 17u] = penA.z;
   }
 

@@ -2020,6 +2020,31 @@ if (!only || only === 'materials') {
         `elastic ${JSON.stringify(stagedElastic)}`
     );
   }
+
+  {
+    // A joint's penalty is capped by its material stiffness and by the
+    // solver's penaltyMax, as on the CPU. The GPU packed min(k*, 1e10) and
+    // capped the in-step ramp with that alone, so a lowered penaltyMax held
+    // only at the warm start. Low enough that the ramp reaches it every step.
+    const solver = new Solver();
+    solver.defaultParams();
+    solver.penaltyMax = 50;
+    const anchor = new Rigid(solver, [1, 1, 1], 0, 0.5, [0, 0, 4]);
+    const bob = new Rigid(solver, [1, 1, 1], 1, 0.5, [1.5, 0, 4]);
+    const joint = new Joint(solver, anchor, bob, [0.5, 0, 0], [-1, 0, 0], Infinity, Infinity);
+    backend.overrideColoring = null;
+    backend.topologyDirty = true;
+    backend.pack(solver);
+    for (let i = 0; i < 20; i++) backend.step(solver);
+    await backend.idle();
+    await backend.syncToCPU(solver);
+    const peak = Math.max(...joint.penaltyLin, ...joint.penaltyAng);
+    check(
+      'GPU joint penalties respect a lowered penaltyMax',
+      peak >= solver.penaltyMax * 0.99 && peak <= solver.penaltyMax * (1 + 1e-6),
+      `peak joint penalty ${peak}, penaltyMax ${solver.penaltyMax}`
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
