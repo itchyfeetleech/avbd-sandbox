@@ -63,6 +63,34 @@ function ceilPow2(v) {
   return p;
 }
 
+/**
+ * Create a shader module and collect its compile errors as
+ * `{ lineNum, linePos, message }` records.
+ *
+ * `getCompilationInfo()` gives line positions, but not every implementation
+ * provides it (Deno's does not). A validation error scope still catches an
+ * invalid module there, without positions; a module that cannot be checked
+ * either way reports no errors and fails later at pipeline creation instead.
+ */
+export async function compileShaderModule(device, code, label) {
+  const scoped = typeof device.pushErrorScope === 'function';
+  if (scoped) device.pushErrorScope('validation');
+  const module = device.createShaderModule({ code, label });
+  const scopeError = scoped ? await device.popErrorScope() : null;
+
+  let errors = [];
+  if (typeof module.getCompilationInfo === 'function') {
+    const info = await module.getCompilationInfo();
+    errors = info.messages
+      .filter((m) => m.type === 'error')
+      .map(({ lineNum, linePos, message }) => ({ lineNum, linePos, message }));
+  }
+  if (errors.length === 0 && scopeError) {
+    errors = [{ lineNum: 0, linePos: 0, message: scopeError.message }];
+  }
+  return { module, errors };
+}
+
 /** Largest 1-D pair workload that can be submitted as one indirect dispatch. */
 export function maxDispatchablePairs(limits) {
   const groups = Math.max(
@@ -339,12 +367,14 @@ export class GpuBackend {
     // discards the offending command buffer — which looks exactly like "the
     // simulation isn't running". Capture them so they surface loudly.
     this.gpuErrors = [];
-    this.device.addEventListener('uncapturederror', (event) => {
+    this.device.addEventListener?.('uncapturederror', (event) => {
       const message = event.error?.message || String(event.error);
       if (this.gpuErrors.length < 12) this.gpuErrors.push(message);
       console.error('[WebGPU]', message);
     });
-    this.device.lost.then((info) => {
+    // Not every implementation provides `lost` (Deno's does not), and a
+    // missing promise must not turn device acquisition into a crash.
+    this.device.lost?.then((info) => {
       this.ready = false;
       this.gpuErrors.push(`device lost: ${info.reason} ${info.message}`);
       console.error('[WebGPU] device lost:', info);
@@ -364,9 +394,9 @@ export class GpuBackend {
   async initPipelines(onProgress) {
     if (!this.device) throw new Error('initDevice() must run first.');
 
-    const module = this.device.createShaderModule({ code: SHADER_SOURCE });
-    const compilation = await module.getCompilationInfo();
-    const errors = compilation.messages.filter((m) => m.type === 'error');
+    const { module, errors } = await compileShaderModule(
+      this.device, SHADER_SOURCE, 'avbd-physics'
+    );
     if (errors.length) {
       this.shaderError = errors
         .map((m) => `${m.lineNum}:${m.linePos} ${m.message}`)
@@ -402,7 +432,8 @@ export class GpuBackend {
     // frozen partway through.
     for (let i = 0; i < KERNELS.length; i++) {
       const name = KERNELS[i];
-      this.pipelines[name] = await this.device.createComputePipelineAsync({
+      this.pipelines[name] = await this._createComputePipeline({
+        label: name,
         layout: pipelineLayout,
         compute: { module, entryPoint: name },
       });
@@ -416,6 +447,25 @@ export class GpuBackend {
 
     this.ready = true;
     return this;
+  }
+
+  /**
+   * Prefer asynchronous pipeline creation, which lets a browser compile off the
+   * main thread. A GPUPipelineError is a real failure and propagates. A
+   * TypeError is the binding rejecting the descriptor itself — Deno 2.x does
+   * this for every valid descriptor — and the synchronous call validates the
+   * same descriptor, so retrying there cannot hide a genuine mistake.
+   */
+  async _createComputePipeline(descriptor) {
+    const d = this.device;
+    if (typeof d.createComputePipelineAsync === 'function') {
+      try {
+        return await d.createComputePipelineAsync(descriptor);
+      } catch (err) {
+        if (!(err instanceof TypeError)) throw err;
+      }
+    }
+    return d.createComputePipeline(descriptor);
   }
 
   destroyBuffers() {
@@ -1107,7 +1157,10 @@ export class GpuBackend {
     }
 
     q.writeBuffer(this.bodyBuf, 0, bodyData);
-    q.writeBuffer(this.consBuf, 0, consData, 0, consPrefix);
+    // A subarray rather than (data, offset, size): the spec counts a typed
+    // array's offset and size in elements, but Deno counts bytes, and the
+    // mismatch silently uploads only the first quarter of the prefix.
+    q.writeBuffer(this.consBuf, 0, consData.subarray(0, consPrefix));
     q.writeBuffer(this.metaBuf, 0, metaData);
     if (preserveContactState) {
       if (
@@ -1146,7 +1199,7 @@ export class GpuBackend {
         q.submit([colorEnc.finish()]);
         if (colorSnapshot) {
           const releaseColors = () => colorSnapshot.destroy();
-          void q.onSubmittedWorkDone().then(releaseColors, releaseColors);
+          void this.idle().then(releaseColors, releaseColors);
         }
       }
     } else {
@@ -1192,7 +1245,7 @@ export class GpuBackend {
         bodySnapshot.destroy();
         deferredOldBody?.destroy();
       };
-      void q.onSubmittedWorkDone().then(releaseSnapshot, releaseSnapshot);
+      void this.idle().then(releaseSnapshot, releaseSnapshot);
     } else {
       deferredOldBody?.destroy();
     }
@@ -1250,7 +1303,7 @@ export class GpuBackend {
       };
       // Device loss rejects the completion promise; cleanup remains safe and
       // avoids turning that expected failure path into an unhandled rejection.
-      void q.onSubmittedWorkDone().then(releaseSnapshots, releaseSnapshots);
+      void this.idle().then(releaseSnapshots, releaseSnapshots);
     } else {
       deferredOldCons?.destroy();
     }
@@ -1714,6 +1767,32 @@ export class GpuBackend {
     staging.bodyStride = 0;
     staging.stepSerial = 0;
     staging.topologyGeneration = 0;
+  }
+
+  /**
+   * Resolve once every queue submission made so far has completed.
+   *
+   * `queue.onSubmittedWorkDone()` is the direct way to ask, but it is not
+   * dependable everywhere: Deno's never resolves, and Firefox's takes ~100 ms
+   * however little work is queued. Mapping a buffer written by a fresh
+   * submission resolves when that submission finishes, and queue order makes
+   * that everything before it too. Verification and benchmarks wait on this;
+   * the frame loop never does.
+   */
+  async idle() {
+    const probe = this.device.createBuffer({
+      label: 'IDLE_PROBE',
+      size: 4,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    const enc = this.device.createCommandEncoder();
+    enc.clearBuffer(probe, 0, 4);
+    this.device.queue.submit([enc.finish()]);
+    try {
+      await probe.mapAsync(GPUMapMode.READ);
+    } finally {
+      probe.destroy();
+    }
   }
 
   /** Approximate submitted physics steps not yet known complete on the GPU. */

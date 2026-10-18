@@ -34,7 +34,7 @@ async function settle(backend, build, steps, tweak) {
   backend.topologyDirty = true;
   backend.pack(solver);
   for (let i = 0; i < steps; i++) backend.step(solver);
-  await backend.device.queue.onSubmittedWorkDone();
+  await backend.idle();
 
   const { data, layout, counters } = await backend.readState();
   const dynamic = [];
@@ -64,7 +64,7 @@ async function colorPropagation(backend, rounds) {
   backend.topologyDirty = true;
   backend.pack(solver);
   backend.step(solver);
-  await backend.device.queue.onSubmittedWorkDone();
+  await backend.idle();
   return (await backend.readColoring()).colorOf;
 }
 
@@ -139,7 +139,7 @@ async function oneStepImpact(backend, { velocity, restitution, contactOffset }) 
   backend.topologyDirty = true;
   backend.pack(solver);
   backend.step(solver);
-  await backend.device.queue.onSubmittedWorkDone();
+  await backend.idle();
 
   const state = await backend.readState();
   const colouring = await backend.readColoring();
@@ -179,12 +179,12 @@ async function stagedImpact(backend, restitution) {
   backend.pack(solver);
 
   backend.step(solver);
-  await backend.device.queue.onSubmittedWorkDone();
+  await backend.idle();
   const first = await backend.readColoring();
   const firstState = await backend.readState();
 
   backend.step(solver);
-  await backend.device.queue.onSubmittedWorkDone();
+  await backend.idle();
   const second = await backend.readColoring();
   const state = await backend.readState();
   return {
@@ -212,7 +212,7 @@ async function sphereBoxCornerContacts(backend, xy) {
   backend.topologyDirty = true;
   backend.pack(solver);
   backend.step(solver);
-  await backend.device.queue.onSubmittedWorkDone();
+  await backend.idle();
   return (await backend.readState()).counters.contacts;
 }
 
@@ -264,7 +264,7 @@ export async function runGpuChecks(backend, { big = false } = {}) {
     backend.topologyDirty = true;
     backend.pack(solver);
     backend.step(solver);
-    await backend.device.queue.onSubmittedWorkDone();
+    await backend.idle();
     const packed = (await backend.readSpringStates())[backend.springIndex.get(spring)];
     const colouring = await backend.readColoring();
     await backend.syncToCPU(solver);
@@ -345,7 +345,7 @@ export async function runGpuChecks(backend, { big = false } = {}) {
     backend.topologyDirty = true;
     backend.pack(solver);
     for (let i = 0; i < 90; i++) backend.step(solver);
-    await backend.device.queue.onSubmittedWorkDone();
+    await backend.idle();
 
     const slowIndex = backend.bodyIndex.get(slow);
     const fastIndex = backend.bodyIndex.get(fast);
@@ -370,7 +370,7 @@ export async function runGpuChecks(backend, { big = false } = {}) {
       new Float32Array([10, 0, 0, 0])
     );
     backend.step(solver);
-    await backend.device.queue.onSubmittedWorkDone();
+    await backend.idle();
 
     const colouring = await backend.readColoring();
     const slowState = stickStateForBody(colouring, slowIndex);
@@ -397,7 +397,7 @@ export async function runGpuChecks(backend, { big = false } = {}) {
     backend.topologyDirty = true;
     backend.pack(solver);
     backend.step(solver);
-    await backend.device.queue.onSubmittedWorkDone();
+    await backend.idle();
 
     const before = await backend.readColoring();
     const oldSlot = before.slotInfo.findIndex((slot) => slot.numContacts > 0);
@@ -455,7 +455,7 @@ export async function runGpuChecks(backend, { big = false } = {}) {
       }
 
       backend.step(solver);
-      await backend.device.queue.onSubmittedWorkDone();
+      await backend.idle();
       const after = await backend.readColoring();
       const newInfo = after.slotInfo.find((slot) => slot.numContacts > 0);
       const carried = newInfo?.contacts.reduce((best, contact) => {
@@ -557,9 +557,9 @@ export async function runGpuChecks(backend, { big = false } = {}) {
     backend.topologyDirty = true;                     // then hands over
     for (let i = 0; i < 200; i++) {
       backend.step(solver);
-      if (i % 4 === 0) await backend.device.queue.onSubmittedWorkDone();
+      if (i % 4 === 0) await backend.idle();
     }
-    await backend.device.queue.onSubmittedWorkDone();
+    await backend.idle();
     const { data, layout } = await backend.readState();
     const z = solver.bodies.filter((b) => b.mass > 0)
       .map((b) => data[layout.body.bPos + solver.bodies.indexOf(b) * 4 + 2]);

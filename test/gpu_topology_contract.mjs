@@ -140,7 +140,7 @@ check(
 check(
   'CPU constraint staging excludes the GPU-owned contact arenas',
   /this\.packCons = new Float32Array\(this\.layout\.cons\.cSlotA\)/.test(backendSource) &&
-    /q\.writeBuffer\(this\.consBuf, 0, consData, 0, consPrefix\)/.test(backendSource)
+    /q\.writeBuffer\(this\.consBuf, 0, consData\.subarray\(0, consPrefix\)\)/.test(backendSource)
 );
 
 check(

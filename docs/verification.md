@@ -32,8 +32,9 @@ node tools/check-wgsl.mjs             # WGSL lint + host/shader agreement
 Apart from the parity reference build, the Deno GPU run and the real-browser driver
 run, every check needs only Node.
 
-`tools/gputest.mjs` needs a [Deno](https://deno.land) runtime, which embeds Dawn; it
-finds one on `PATH`, at `~/.deno/bin/deno`, or at `$DENO`.
+`tools/gputest.mjs` needs a [Deno](https://deno.land) runtime, whose WebGPU is wgpu; it
+finds one on `PATH`, at `~/.deno/bin/deno`, or at `$DENO`. On a machine without a Vulkan
+driver, `--swiftshader` runs it on the SwiftShader device that Chrome ships.
 
 ## Parity against the authors' implementation
 
