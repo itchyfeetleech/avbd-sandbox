@@ -44,7 +44,8 @@ node test/manifold_width.mjs          # contacts-per-manifold distribution
 
 Apart from the parity reference build, the Deno GPU run and the browser runs, every
 check needs only Node. CI (`.github/workflows/ci.yml`) runs all of them except the
-real-driver run on every push.
+real-driver run on every push, and the Pages deployment waits for it: a commit on `main`
+goes live only once CI has passed on it.
 
 `tools/gputest.mjs` needs a [Deno](https://deno.land) runtime, whose WebGPU is wgpu; it
 finds one on `PATH`, at `~/.deno/bin/deno`, or at `$DENO`. On a machine without a Vulkan

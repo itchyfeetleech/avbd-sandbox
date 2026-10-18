@@ -14,6 +14,7 @@
   <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT licence">
   <img src="https://img.shields.io/badge/backends-WebGPU%20%2B%20CPU%20f64-8957e5?style=flat-square" alt="WebGPU and CPU f64 backends">
   <img src="https://img.shields.io/badge/dependencies-none-555?style=flat-square" alt="No dependencies">
+  <a href="https://github.com/itchyfeetleech/avbd-sandbox/actions/workflows/ci.yml"><img src="https://github.com/itchyfeetleech/avbd-sandbox/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
   <a href="https://github.com/itchyfeetleech/avbd-sandbox/actions/workflows/pages.yml"><img src="https://github.com/itchyfeetleech/avbd-sandbox/actions/workflows/pages.yml/badge.svg" alt="Pages deploy status"></a>
 </p>
 
