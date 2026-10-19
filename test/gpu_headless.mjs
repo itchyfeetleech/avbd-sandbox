@@ -1560,7 +1560,7 @@ if (!only || only === 'topology') {
 //              Must hold at any round count.
 //   soundness  no two bodies sharing a force get the same colour. Only
 //              guaranteed at the colouring's fixed point, since the shipped
-//              three rounds deliberately tolerate leftovers.
+//              rounds deliberately tolerate leftovers.
 // ---------------------------------------------------------------------------
 
 async function colourScene(build, rounds, steps = 90) {
@@ -1666,10 +1666,10 @@ if (!only || only === 'colouring') {
   {
     // A 40-link cable of slender bars between two fixed anchors, built link by
     // link. When bodies claimed colours in index order, such a chain needed
-    // one Jacobi round per link: at three rounds a step it was still mostly
-    // conflicted after a dozen steps, its links updated Jacobi-style against
-    // each other, and it diverged to NaN by step 9 (a suspension bridge's
-    // main cables, for one).
+    // one Jacobi round per link: at three rounds a step (then the shipped
+    // count) it was still mostly conflicted after a dozen steps, its links
+    // updated Jacobi-style against each other, and it diverged to NaN by
+    // step 9 (a suspension bridge's main cables, for one).
     const solver = new Solver();
     solver.defaultParams();
     solver.iterations = 14;

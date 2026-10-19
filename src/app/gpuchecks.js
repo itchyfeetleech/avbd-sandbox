@@ -23,6 +23,8 @@ import {
   colorOrder,
 } from '../physics/gpu/layout.js';
 import { SCENES } from './scenes.js';
+import { Joint } from '../physics/joint.js';
+import { quat } from '../math/maths.js';
 
 /** Settle a scene on the GPU and report the resulting body heights. */
 async function settle(backend, build, steps, tweak) {
@@ -310,6 +312,36 @@ export async function runGpuChecks(backend, { big = false } = {}) {
       `${r.counters.contacts} contacts (expected >500 for a settled pyramid)`);
     add('no capacity overflow', r.counters.overflow === 0,
       `overflow bits = ${r.counters.overflow} (1 pairs, 2 slots, 4 adjacency)`);
+  }
+
+  // --- light limbs on hard sockets, through a tumble and a pile-up ---
+  {
+    // A colouring conflict left after the shipped rounds degrades to a Jacobi
+    // update, which contacts shrug off and 30-100 g limbs on hard sockets do
+    // not: at three rounds a ragdoll's knee here opened from 1 mm to 53 m in
+    // 18 steps under Chrome's compiler on SwiftShader, while lavapipe's run,
+    // rounding differently, never met the conflict. This page is the one that
+    // runs on the compiler where it happened.
+    const ragdolls = SCENES.find((s) => s.id === 'ragdolls');
+    const r = await settle(backend, ragdolls.build, 300, (s) => { s.iterations = 12; });
+    const { data, layout } = await backend.readState();
+    const at = (b, v) => {
+      const i = backend.bodyIndex.get(b);
+      const q = [0, 1, 2, 3].map((k) => data[layout.body.bQuat + i * 4 + k]);
+      const out = [0, 0, 0];
+      quat.rotateVec(out, q, v);
+      return [0, 1, 2].map((k) => data[layout.body.bPos + i * 4 + k] + out[k]);
+    };
+    let worst = 0;
+    for (const j of r.solver.forces) {
+      if (!(j instanceof Joint) || !j.bodyA) continue;
+      const a = at(j.bodyA, j.rA);
+      const b = at(j.bodyB, j.rB);
+      const gap = Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+      worst = Number.isFinite(gap) ? Math.max(worst, gap) : Infinity;
+    }
+    add('ragdolls keep their sockets closed through a pile-up', worst < 0.05,
+      `worst socket gap after 300 steps ${worst.toFixed(3)} m (limit 0.05)`);
   }
 
   // --- warm starting must survive across frames (Eq. 19) ---
