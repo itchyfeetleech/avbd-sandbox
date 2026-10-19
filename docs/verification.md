@@ -133,14 +133,14 @@ cache, removing the margin does not tighten contacts — it loosens them. The bi
 what holds the contact feature set steady between frames. Without it, contacts churn,
 the Eq. 19 warm start stops carrying `k` and `λ` forward, and convergence degrades.
 
-On the card tower, `collisionMargin = 0` costs:
+On the card tower, `collisionMargin = 0` costs (two seconds after five of settling):
 
 | | change |
 |---|---|
-| peak penetration | 5.6× worse |
-| residual motion | 6× worse |
-| contact churn | 55× worse |
-| settling behaviour | KE tail/head 0.26 → 3.73 (a settling pile becomes a self-exciting one) |
+| peak penetration | 18× worse |
+| residual motion | 36× worse |
+| contact churn | none → 1.2 contact features gained or lost per step |
+| settling behaviour | KE tail/head 0.03 → 0.31 (the tower settles ten times more slowly) |
 
 So the overlap stays, and the renderers draw each body inset by half a margin instead.
 Two bodies resting at equilibrium then meet exactly flush, at a fixed 5 mm shrink that
@@ -154,7 +154,7 @@ transport allow the rest offset to be selected independently.
 
 `test/convergence.mjs` measures what the iteration budget leaves behind, and confirms
 it *is* a budget: raising it to 40 iterations reduces mean penetration 21.7× on the
-pyramid, which ships at 16, and 13.8× on the card tower, which ships at the default 10.
+pyramid, which ships at 16, and 33× on the card tower, which ships at the default 10.
 
 `test/pacing.mjs` characterises the fixed-timestep loop across seven refresh rates and
 four timesteps, asserting that the simulation advances at real time and that the
@@ -193,6 +193,12 @@ valid. Naga accepted `a * k ^ b * k`, which WGSL forbids; Tint rejected the whol
 and for as long as that went unnoticed the GPU backend could not start in Chrome or Edge.
 `node tools/browsertest.mjs --headless` runs Chrome or Chromium with WebGPU on
 SwiftShader, needs no GPU or display, and is what CI runs.
+
+The compilers also round differently, and a stiff scene can magnify that. With three
+colouring rounds a step, the ragdoll scene held on Deno, but in Chrome on SwiftShader its
+trajectory met a colouring conflict at the wrong moment and a knee opened from 1 mm to
+53 m within 18 steps. The self-test now carries that scene, and fails at three rounds
+where the shipped five pass.
 
 Neither replaces the real driver. Both software devices are single threaded, IEEE-exact
 and have no bandwidth wall, so an entire class of fault is invisible to them. A

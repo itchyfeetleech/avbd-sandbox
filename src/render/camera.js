@@ -30,6 +30,14 @@ export class OrbitCamera {
 
     /** WebGPU clips z to [0,1]; WebGL to [-1,1]. Set by the renderer. */
     this.clipZeroToOne = false;
+    /**
+     * Horizontal shift of the image centre, in normalized device units: 0.25
+     * puts what the camera looks at an eighth of the width right of centre.
+     * The app uses it to centre the view in the part of the canvas a side
+     * panel leaves uncovered. Rays are built from the same matrices, so
+     * picking stays exact.
+     */
+    this.viewOffsetX = 0;
   }
 
   orbit(dAzimuth, dElevation) {
@@ -80,6 +88,8 @@ export class OrbitCamera {
     } else {
       mat4.perspective(this.proj, this.fov, aspect, this.near, this.far);
     }
+    // x_ndc = (P00·x + P02·z) / -z, so P02 = -s moves the centre to +s.
+    this.proj[8] = -this.viewOffsetX;
     mat4.multiply(this.viewProj, this.proj, this.view);
     mat4.invert(this.invViewProj, this.viewProj);
   }

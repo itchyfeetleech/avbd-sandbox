@@ -11,6 +11,9 @@ import assert from 'node:assert/strict';
 import { Solver } from '../src/physics/solver.js';
 import { collide, MAX_CONTACTS } from '../src/physics/collide.js';
 import { spawnPattern } from '../src/app/scenes.js';
+import { RAGDOLL_BODY_COUNT } from '../src/app/builders.js';
+import { Joint } from '../src/physics/joint.js';
+import { quat } from '../src/math/maths.js';
 
 const PATTERNS = ['tower', 'wall', 'pyramid', 'grid', 'ring'];
 const SCATTERED = ['rain', 'cluster', 'funnel'];
@@ -114,6 +117,63 @@ for (const pattern of [...PATTERNS, ...SCATTERED]) {
   assert.deepEqual([...body.positionLin], [3, -2, 5 + body.size[2] / 2]);
   checks++;
   console.log('PASS  a single dropped body lands where it was aimed');
+}
+
+{
+  // Ragdolls: the count is a body budget, spent eleven bodies at a time.
+  const solver = new Solver();
+  const bodies = spawnPattern(solver, {
+    pattern: 'ragdoll', count: 10 * RAGDOLL_BODY_COUNT + 5, size: 0.9, height: 0, seed: SEED,
+  });
+  assert.equal(bodies.length, 10 * RAGDOLL_BODY_COUNT, 'a partial figure must not be spawned');
+  const joints = solver.forces.filter((f) => f instanceof Joint);
+  assert.equal(joints.length, 10 * (RAGDOLL_BODY_COUNT - 1), 'every figure is one connected tree');
+  for (const j of joints) {
+    const gap = Math.hypot(...j._evalLinear([0, 0, 0]));
+    assert.ok(gap < 1e-9, `a ragdoll socket starts ${gap.toExponential(2)} m open`);
+  }
+  checks++;
+  console.log('PASS  ragdolls spend the budget in whole figures, every socket closed');
+
+  const overlap = firstInitialContact(bodies);
+  assert.equal(overlap, null, `ragdolls start with a contact between bodies ${overlap?.join(' and ')}`);
+  checks++;
+  console.log('PASS  ragdolls start contact-free');
+
+  // Lowest point of every part, turned: a box's corners, a sphere's radius.
+  const axisZ = [0, 0, 0];
+  let lowest = Infinity;
+  for (const b of bodies) {
+    let reach;
+    if (b.shape === 'sphere') {
+      reach = b.radius;
+    } else {
+      reach = 0;
+      for (let k = 0; k < 3; k++) {
+        const e = [0, 0, 0];
+        e[k] = 1;
+        quat.rotateVec(axisZ, b.positionAng, e);
+        reach += Math.abs(axisZ[2]) * b.size[k] / 2;
+      }
+    }
+    lowest = Math.min(lowest, b.positionLin[2] - reach);
+  }
+  assert.ok(lowest >= 0, `ragdolls start ${(-lowest).toFixed(3)} m into the surface`);
+  checks++;
+  console.log('PASS  ragdolls start above the surface at drop height 0');
+}
+
+{
+  // The Drop tool's ragdoll lands where it was aimed, give or take its pose.
+  const bodies = spawnPattern(new Solver(), {
+    pattern: 'ragdoll', count: RAGDOLL_BODY_COUNT, size: 0.9, origin: [3, -2, 0], height: 5, seed: SEED,
+  });
+  const mass = bodies.reduce((m, b) => m + b.mass, 0);
+  const centre = [0, 1, 2].map((k) => bodies.reduce((a, b) => a + b.positionLin[k] * b.mass, 0) / mass);
+  assert.ok(Math.hypot(centre[0] - 3, centre[1] + 2) < 0.6, `dropped ragdoll centred at ${centre}`);
+  assert.ok(centre[2] > 5, 'dropped ragdoll starts below the drop height');
+  checks++;
+  console.log('PASS  a dropped ragdoll lands where it was aimed');
 }
 
 console.log(`\n${checks}/${checks} spawner checks passed.`);

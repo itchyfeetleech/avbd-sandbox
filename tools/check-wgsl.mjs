@@ -287,9 +287,11 @@ const { SHADER_SOURCE } = await load('src/physics/gpu/shaders.js');
 scan('gpu/shaders.js', SHADER_SOURCE);
 scanGrammar('gpu/shaders.js', SHADER_SOURCE);
 
-const { RENDER_SHADER } = await load('src/render/renderer_webgpu.js');
+const { RENDER_SHADER, POST_SHADER } = await load('src/render/renderer_webgpu.js');
 scan('renderer_webgpu.js', RENDER_SHADER);
 scanGrammar('renderer_webgpu.js', RENDER_SHADER);
+scan('renderer_webgpu.js (post)', POST_SHADER);
+scanGrammar('renderer_webgpu.js (post)', POST_SHADER);
 
 // Integers must not round-trip through the f32 arenas as bit patterns: small
 // u32 values are subnormal f32s, which WGSL lets an implementation flush to

@@ -27,16 +27,43 @@ export const MAX_COLORS = 32;
  * Refinement rounds for the parallel Jacobi colouring (paper Section 4).
  *
  * The colouring is incremental — each step starts from the previous step's
- * assignment, which is usually still almost valid — so only a couple of rounds
- * are needed to settle it. Measured per-pass GPU timing showed the pass
- * containing this colouring at 58% of the step, with 8 from-scratch rounds
- * being most of it.
+ * assignment, which is usually still almost valid — so a few rounds settle
+ * it, where from-scratch colouring needed eight. Each round is one light
+ * dispatch over the bodies, against the solver loop's one per iteration and
+ * colour.
  *
- * Any conflict still present afterwards is harmless: the primal update is
- * double buffered, so two same-coloured neighbours simply degrade to a Jacobi
- * update for that step, exactly as the paper describes.
+ * A conflict still present afterwards degrades to a Jacobi update for that
+ * step: the primal write is double buffered, as the paper describes. Contacts
+ * shrug that off; light bodies on hard joints may not. At three rounds a
+ * ragdoll's knee (a 71 g shin on a 95 g thigh) opened from 1 mm to 53 m within
+ * 18 steps when Chrome's compiler ran the ragdoll scene on SwiftShader; at
+ * five and at eight the same run stays within 1 mm. The browser self-test
+ * (src/app/gpuchecks.js) keeps that scene in its checks.
  */
-export const JACOBI_ITERS = 3;
+export const JACOBI_ITERS = 5;
+
+/**
+ * The order bodies claim colours in: the shader's `colorPriority`, mirrored
+ * here for tests that need a graph to colour in a known number of rounds.
+ * lowbias32, an integer hash; ties go to the lower index.
+ */
+export function colorPriority(index) {
+  let x = index >>> 0;
+  x = (x ^ (x >>> 16)) >>> 0;
+  x = Math.imul(x, 0x7feb352d) >>> 0;
+  x = (x ^ (x >>> 15)) >>> 0;
+  x = Math.imul(x, 0x846ca68b) >>> 0;
+  return (x ^ (x >>> 16)) >>> 0;
+}
+
+/**
+ * Body indices 0..n-1 sorted into colouring order. A chain linked in this
+ * order is the worst case for the Jacobi rounds: each settles one more link.
+ */
+export function colorOrder(n) {
+  return Array.from({ length: n }, (_, i) => i)
+    .sort((a, b) => colorPriority(a) - colorPriority(b) || a - b);
+}
 
 /** Contact points the SAT can produce for one box pair (matches collide.js). */
 export const MAX_CONTACTS_PER_MANIFOLD = 8;

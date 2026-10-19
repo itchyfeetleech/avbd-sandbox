@@ -32,7 +32,7 @@ import {
 } from '../src/physics/gpu/backend.js';
 import { spawnPattern } from '../src/app/scenes.js';
 import {
-  BODY_SECTIONS, MAX_COLORS, JACOBI_ITERS, MAX_CONTACTS_PER_MANIFOLD,
+  BODY_SECTIONS, MAX_COLORS, JACOBI_ITERS, MAX_CONTACTS_PER_MANIFOLD, colorOrder,
   JOINT_STRIDE, SLOT_HEADER, SLOT_STRIDE, CONTACT_STRIDE,
 } from '../src/physics/gpu/layout.js';
 
@@ -100,13 +100,15 @@ check(
   // pass with renderer_webgpu.js in a state that would not even parse, because
   // nothing here imported it. `tools/check-wgsl.mjs` is a lint over the source
   // text, not a compile, so it cannot stand in for this.
-  const { RENDER_SHADER } = await import('../src/render/renderer_webgpu.js');
-  const { errors } = await compileShaderModule(backend.device, RENDER_SHADER);
-  check(
-    'the render module compiles',
-    errors.length === 0,
-    errors.map((m) => `${m.lineNum}:${m.linePos} ${m.message}`).join('\n        ')
-  );
+  const { RENDER_SHADER, POST_SHADER } = await import('../src/render/renderer_webgpu.js');
+  for (const [name, code] of [['render', RENDER_SHADER], ['post-processing', POST_SHADER]]) {
+    const { errors } = await compileShaderModule(backend.device, code);
+    check(
+      `the ${name} module compiles`,
+      errors.length === 0,
+      errors.map((m) => `${m.lineNum}:${m.linePos} ${m.message}`).join('\n        ')
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1558,7 +1560,7 @@ if (!only || only === 'topology') {
 //              Must hold at any round count.
 //   soundness  no two bodies sharing a force get the same colour. Only
 //              guaranteed at the colouring's fixed point, since the shipped
-//              three rounds deliberately tolerate leftovers.
+//              rounds deliberately tolerate leftovers.
 // ---------------------------------------------------------------------------
 
 async function colourScene(build, rounds, steps = 90) {
@@ -1614,14 +1616,20 @@ function buildColourScene(s) {
   new Spring(s, a, c, [0.5, 0, 0], [-0.5, 0, 0], 800, 1.5);
 }
 
-/** A fixed graph whose greedy coloring advances exactly one edge per round. */
+/**
+ * A fixed graph whose greedy coloring advances exactly one edge per round: a
+ * chain linked in colouring order, so each link waits on the one before it.
+ */
+const PROPAGATION_ORDER = colorOrder(12);
 function buildColourPropagationChain(s) {
   s.gravity = 0;
-  let prev = null;
-  for (let i = 0; i < 12; i++) {
-    const b = new Rigid(s, [0.1, 0.1, 0.1], 1, 0.5, [i * 10, 0, 0]);
-    if (prev) new Spring(s, prev, b, [0, 0, 0], [0, 0, 0], 1, 10);
-    prev = b;
+  const rank = [];
+  PROPAGATION_ORDER.forEach((index, k) => (rank[index] = k));
+  const bodies = rank.map((k) => new Rigid(s, [0.1, 0.1, 0.1], 1, 0.5, [k * 10, 0, 0]));
+  for (let k = 1; k < PROPAGATION_ORDER.length; k++) {
+    const a = bodies[PROPAGATION_ORDER[k - 1]];
+    const b = bodies[PROPAGATION_ORDER[k]];
+    new Spring(s, a, b, [0, 0, 0], [0, 0, 0], 1, 10);
   }
 }
 
@@ -1647,10 +1655,58 @@ if (!only || only === 'colouring') {
     const badThree = conflicts(three.colouring.colorOf, three.edges);
     check(
       'an odd final colouring round is consumed from buffer B',
-      three.colouring.colorOf[3] !== two.colouring.colorOf[3] &&
+      three.colouring.colorOf[PROPAGATION_ORDER[3]] !== two.colouring.colorOf[PROPAGATION_ORDER[3]] &&
         badThree.length < badTwo.length,
       `2 rounds: [${two.colouring.colorOf.join(', ')}], ${badTwo.length} conflicts; ` +
         `3 rounds: [${three.colouring.colorOf.join(', ')}], ${badThree.length} conflicts`
+    );
+  }
+
+  // --- long chains converge in a few steps, not one link per round ---
+  {
+    // A 40-link cable of slender bars between two fixed anchors, built link by
+    // link. When bodies claimed colours in index order, such a chain needed
+    // one Jacobi round per link: at three rounds a step (then the shipped
+    // count) it was still mostly conflicted after a dozen steps, its links
+    // updated Jacobi-style against each other, and it diverged to NaN by
+    // step 9 (a suspension bridge's main cables, for one).
+    const solver = new Solver();
+    solver.defaultParams();
+    solver.iterations = 14;
+    const anchorA = new Rigid(solver, [0.5, 0.5, 0.5], 0, 0.5, [0, 0, 20]);
+    let prev = anchorA;
+    let prevAnchor = [0, 0, 0];
+    const links = [];
+    for (let k = 0; k < 40; k++) {
+      const bar = new Rigid(solver, [0.98, 0.16, 0.16], 3, 0.5, [k + 0.5, 0, 20]);
+      links.push(new Joint(solver, prev, bar, prevAnchor, [-0.5, 0, 0]));
+      prev = bar;
+      prevAnchor = [0.5, 0, 0];
+    }
+    const anchorB = new Rigid(solver, [0.5, 0.5, 0.5], 0, 0.5, [40, 0, 20]);
+    links.push(new Joint(solver, anchorB, prev, [0, 0, 0], prevAnchor));
+
+    backend.overrideColoring = null;
+    backend.colorRounds = JACOBI_ITERS;
+    backend.topologyDirty = true;
+    backend.pack(solver);
+    for (let i = 0; i < 4; i++) backend.step(solver);
+    await backend.idle();
+    const colouring = await backend.readColoring();
+    const sameColour = links.filter((j) => {
+      if (j.bodyA.mass <= 0) return false;
+      return colouring.colorOf[backend.bodyIndex.get(j.bodyA)] ===
+        colouring.colorOf[backend.bodyIndex.get(j.bodyB)];
+    }).length;
+    for (let i = 0; i < 56; i++) backend.step(solver);
+    await backend.idle();
+    const { data, layout } = await backend.readState();
+    const finite = solver.bodies.every((b, i) =>
+      [0, 1, 2].every((c) => Number.isFinite(data[layout.body.bPos + i * 4 + c])));
+    check(
+      'a 40-link chain is conflict-free after four steps and stays finite',
+      sameColour === 0 && finite,
+      `${sameColour} of ${links.length} joints still same-coloured after 4 steps; finite=${finite}`
     );
   }
 

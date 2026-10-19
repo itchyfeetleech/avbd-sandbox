@@ -20,8 +20,11 @@ import { Rigid } from '../physics/rigid.js';
 import { Spring } from '../physics/spring.js';
 import {
   JACOBI_ITERS, MAX_COLORS, SLOT_HEADER, SLOT_STRIDE,
+  colorOrder,
 } from '../physics/gpu/layout.js';
 import { SCENES } from './scenes.js';
+import { Joint } from '../physics/joint.js';
+import { quat } from '../math/maths.js';
 
 /** Settle a scene on the GPU and report the resulting body heights. */
 async function settle(backend, build, steps, tweak) {
@@ -46,16 +49,22 @@ async function settle(backend, build, steps, tweak) {
 
 const GROUND = (s) => new Rigid(s, [60, 60, 2], 0, 0.5, [0, 0, -1]);
 
-/** One-step coloring of a chain, used to expose A/B ping-pong parity. */
+/**
+ * One-step coloring of a chain, used to expose A/B ping-pong parity. Linked in
+ * colouring order, so each round settles exactly one more link.
+ */
+const PROPAGATION_ORDER = colorOrder(12);
 async function colorPropagation(backend, rounds) {
   const solver = new Solver();
   solver.defaultParams();
   solver.gravity = 0;
-  let prev = null;
-  for (let i = 0; i < 12; i++) {
-    const body = new Rigid(solver, [0.1, 0.1, 0.1], 1, 0.5, [i * 10, 0, 0]);
-    if (prev) new Spring(solver, prev, body, [0, 0, 0], [0, 0, 0], 1, 10);
-    prev = body;
+  const rank = [];
+  PROPAGATION_ORDER.forEach((index, k) => (rank[index] = k));
+  const bodies = rank.map((k) => new Rigid(solver, [0.1, 0.1, 0.1], 1, 0.5, [k * 10, 0, 0]));
+  for (let k = 1; k < PROPAGATION_ORDER.length; k++) {
+    const a = bodies[PROPAGATION_ORDER[k - 1]];
+    const b = bodies[PROPAGATION_ORDER[k]];
+    new Spring(solver, a, b, [0, 0, 0], [0, 0, 0], 1, 10);
   }
 
   backend.overrideColoring = null;
@@ -305,6 +314,36 @@ export async function runGpuChecks(backend, { big = false } = {}) {
       `overflow bits = ${r.counters.overflow} (1 pairs, 2 slots, 4 adjacency)`);
   }
 
+  // --- light limbs on hard sockets, through a tumble and a pile-up ---
+  {
+    // A colouring conflict left after the shipped rounds degrades to a Jacobi
+    // update, which contacts shrug off and 30-100 g limbs on hard sockets do
+    // not: at three rounds a ragdoll's knee here opened from 1 mm to 53 m in
+    // 18 steps under Chrome's compiler on SwiftShader, while lavapipe's run,
+    // rounding differently, never met the conflict. This page is the one that
+    // runs on the compiler where it happened.
+    const ragdolls = SCENES.find((s) => s.id === 'ragdolls');
+    const r = await settle(backend, ragdolls.build, 300, (s) => { s.iterations = 12; });
+    const { data, layout } = await backend.readState();
+    const at = (b, v) => {
+      const i = backend.bodyIndex.get(b);
+      const q = [0, 1, 2, 3].map((k) => data[layout.body.bQuat + i * 4 + k]);
+      const out = [0, 0, 0];
+      quat.rotateVec(out, q, v);
+      return [0, 1, 2].map((k) => data[layout.body.bPos + i * 4 + k] + out[k]);
+    };
+    let worst = 0;
+    for (const j of r.solver.forces) {
+      if (!(j instanceof Joint) || !j.bodyA) continue;
+      const a = at(j.bodyA, j.rA);
+      const b = at(j.bodyB, j.rB);
+      const gap = Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+      worst = Number.isFinite(gap) ? Math.max(worst, gap) : Infinity;
+    }
+    add('ragdolls keep their sockets closed through a pile-up', worst < 0.05,
+      `worst socket gap after 300 steps ${worst.toFixed(3)} m (limit 0.05)`);
+  }
+
   // --- warm starting must survive across frames (Eq. 19) ---
   // If it dies, contacts are still found and the solve still runs, so nothing
   // else here fails — but k restarts from penaltyMin every step and large piles
@@ -329,8 +368,9 @@ export async function runGpuChecks(backend, { big = false } = {}) {
     const three = await colorPropagation(backend, 3);
     backend.colorRounds = previousRounds ?? JACOBI_ITERS;
     backend.encColors = previousColors;
+    const probe = PROPAGATION_ORDER[3];
     add('an odd final colouring round is consumed',
-      three[3] !== two[3],
+      three[probe] !== two[probe],
       `2 rounds [${two.join(', ')}]; 3 rounds [${three.join(', ')}]`);
   }
 

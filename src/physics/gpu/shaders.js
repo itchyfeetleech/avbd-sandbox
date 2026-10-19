@@ -1555,6 +1555,35 @@ fn otherBodyOfCsr(entry: u32, me: u32) -> u32 {
   return a;
 }
 
+/**
+ * The order in which bodies claim colours: a fixed pseudo-random permutation
+ * of the body index (the lowbias32 integer hash), ties broken by index.
+ *
+ * Each round, a body takes the smallest colour not used by the neighbours
+ * that precede it, so the rounds converge to the sequential greedy colouring
+ * in this order, and they need as many rounds as the longest run of
+ * neighbours in increasing order. In plain index order that run is a whole
+ * chain, rope or stack, because those are built link by link: a 27-link cable
+ * was still conflicted after twelve rounds, its links solved Jacobi-style,
+ * and it diverged. In hashed order the longest run along a chain is a few
+ * links, whatever its length.
+ */
+fn colorPriority(i: u32) -> u32 {
+  var x = i;
+  x = x ^ (x >> 16u);
+  x = x * 0x7feb352du;
+  x = x ^ (x >> 15u);
+  x = x * 0x846ca68bu;
+  x = x ^ (x >> 16u);
+  return x;
+}
+
+fn colorPrecedes(a: u32, b: u32) -> bool {
+  let pa = colorPriority(a);
+  let pb = colorPriority(b);
+  return pa < pb || (pa == pb && a < b);
+}
+
 fn neighborMask(i: u32, srcBase: u32) -> u32 {
   var used = 0u;
 
@@ -1563,7 +1592,7 @@ fn neighborMask(i: u32, srcBase: u32) -> u32 {
   let cc = META[GU.mCsrCount + i];
   for (var k = 0u; k < cc; k = k + 1u) {
     let other = otherBodyOfCsr(META[GU.mCsrEntries + cs + k], i);
-    if (other != NONE && other < i) {
+    if (other != NONE && colorPrecedes(other, i)) {
       let c = atomicLoad(&ATOM[srcBase + other]);
       if (c < 32u) { used = used | (1u << c); }
     }
@@ -1578,7 +1607,7 @@ fn neighborMask(i: u32, srcBase: u32) -> u32 {
     let sb = slotNewBase() + slot * SLOT_STRIDE;
     var other: u32;
     if (side == 0u) { other = u32(CONS[sb + 4u]); } else { other = u32(CONS[sb + 3u]); }
-    if (other < i) {
+    if (colorPrecedes(other, i)) {
       let c = atomicLoad(&ATOM[srcBase + other]);
       if (c < 32u) { used = used | (1u << c); }
     }
