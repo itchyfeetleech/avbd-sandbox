@@ -115,12 +115,12 @@ export const SCENES = [
       addGround(solver, 0.75);
       const steps = 11;
       const { top } = addStairs(solver, {
-        origin: [-4, 0, 0], steps, rise: 0.4, run: 0.8, width: 9, landing: 3,
+        origin: [-4, 0, 0], steps, rise: 0.4, run: 0.8, width: 10, landing: 3,
       });
       const rand = makeRandom(20251019);
       for (let i = 0; i < 10; i++) {
         const wave = i % 2;
-        const y = (i - 4.5) * 0.85 + (rand() - 0.5) * 0.2;
+        const y = (i - 4.5) * 0.75 + (rand() - 0.5) * 0.2;
         // Two waves: one pitched over the top step with a shove, the second
         // thrown from the landing behind it a moment later, so the flight
         // fills with bodies rather than with a single line of them.
@@ -137,7 +137,7 @@ export const SCENES = [
         });
       }
       return {
-        camera: { target: [0.2, 0, 1.4], distance: 12.5, azimuth: -0.5, elevation: 0.3 },
+        camera: { target: [0.8, 0, 1.9], distance: 16, azimuth: -0.55, elevation: 0.27 },
         iterations: 12,
         environment: 'daylight',
       };
@@ -173,7 +173,7 @@ export const SCENES = [
       ball.color = [0.26, 0.27, 0.30];
       ball.finish = FINISH_METAL;
       return {
-        camera: { target: [0, 0, 3.5], distance: 30, azimuth: -1.05, elevation: 0.2 },
+        camera: { target: [0, 0, 5.2], distance: 28, azimuth: -1.2, elevation: 0.17 },
         iterations: 14,
         environment: 'dusk',
       };
@@ -197,7 +197,7 @@ export const SCENES = [
         barThickness: 0.18,
       });
       return {
-        camera: { target: [-3, 0, 9.5], distance: 35, azimuth: -1.32, elevation: 0.1 },
+        camera: { target: [-0.8, 0, 9.2], distance: 35, azimuth: -1.32, elevation: 0.1 },
         iterations: 12,
         environment: 'daylight',
       };
@@ -729,7 +729,7 @@ export const SCENES = [
   {
     id: 'domino',
     name: 'Dominoes',
-    blurb: 'A long run of thin boxes. Sensitive to contact accuracy and friction.',
+    blurb: 'Sixty thin boxes on a spiral, set off by a push. Sensitive to contact accuracy and friction.',
     build(solver) {
       addGround(solver, 0.55);
       const N = 60;
@@ -749,7 +749,7 @@ export const SCENES = [
       const pusher = new Rigid(solver, [1.2, 1.2, 1.2], 6, 0.4, [11.5, -3.4, 1.4], [-3, 7, 0]);
       pusher.color = [0.9, 0.33, 0.27];
       return {
-        camera: { target: [0, 3, 1.5], distance: 36, azimuth: -1.2, elevation: 0.42 },
+        camera: { target: [0, -1.5, 1.5], distance: 40, azimuth: -1.2, elevation: 0.45 },
         environment: 'dusk',
       };
     },
