@@ -195,6 +195,7 @@ function present(renderer, staticDirty, fabricDirty) {
   renderer.highlightIndex = 0xffffffff;
   if (fabricDirty && typeof renderer.setFabricData === 'function') {
     renderer.setFabricData(solver.bodies, solver.forces, backend.getSpringGpuState?.() ?? null);
+    renderer.setLinkData(solver.bodies, solver.forces, backend.getConstraintGpuState?.() ?? null);
   }
   renderer.render(camera);
 }
@@ -227,6 +228,8 @@ async function runShot(shot) {
     result = scene.build(solver) || {};
   }
   solver.iterations = shot.iterations ?? result.iterations ?? 10;
+  renderer.setEnvironment(shot.environment ?? result.environment ?? 'daylight');
+  renderer.occlusionScale = result.occlusionScale ?? 1;
 
   const ground = solver.bodies.find((b) => b.hideFromRenderer);
   renderer.groundHeight = ground ? ground.positionLin[2] + ground.size[2] / 2 : 0;

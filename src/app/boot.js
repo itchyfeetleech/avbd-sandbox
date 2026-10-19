@@ -1842,6 +1842,7 @@ function drawDebugLines() {
       if (force instanceof Joint) {
         if (force.broken) continue;
         if (!state.showJoints && force !== drag.joint) continue;
+        if (force.visual && force !== drag.joint) continue;
         force.endpoints(_pa, _pb);
         const held = force === drag.joint;
         renderer.addLine(
@@ -1853,7 +1854,7 @@ function drawDebugLines() {
         // flags. Drawing the CPU spring mirrors here would overlay stale lines
         // across a visible tear; rope springs remain useful debug geometry.
         if (force.softBodyKind === 'fabric') continue;
-        if (force.hideDebug) continue;
+        if (force.hideDebug || force.visual) continue;
         force.endpoints(_pa, _pb);
         const c = force.debugColor || [0.35, 0.65, 0.85];
         renderer.addLine(_pa[0], _pa[1], _pa[2], _pb[0], _pb[1], _pb[2], c[0], c[1], c[2]);
@@ -2066,6 +2067,11 @@ function advanceFrame(now) {
 
   if (fabricDataReady && state.fabricDirty && typeof renderer.setFabricData === 'function') {
     renderer.setFabricData(solver.bodies, solver.forces, gpuFabricState);
+    renderer.setLinkData(
+      solver.bodies,
+      solver.forces,
+      gpuFabricState ? gpuBackend.getConstraintGpuState() : null
+    );
     state.fabricGpuBuffer = nextFabricGpuBuffer;
     state.fabricDirty = false;
   }

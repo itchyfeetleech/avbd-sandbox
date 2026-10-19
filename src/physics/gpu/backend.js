@@ -1947,6 +1947,25 @@ export class GpuBackend {
     };
   }
 
+  /**
+   * Where the renderer finds break state for drawn ropes and cables: both
+   * constraint kinds live in the CONS arena, at these bases and strides.
+   */
+  getConstraintGpuState() {
+    if (!this.consBuf || !this.layout) return null;
+    return {
+      buffer: this.consBuf,
+      springBase: this.layout.cons.cSpring,
+      springStride: SPRING_STRIDE,
+      springBrokenOffset: 10,
+      springIndex: this.springIndex,
+      jointBase: this.layout.cons.cJoint,
+      jointStride: JOINT_STRIDE,
+      jointBrokenOffset: 30,
+      jointIndex: this.jointIndex,
+    };
+  }
+
   /** Push a drag-joint's world anchor without a repack. */
   updateJointAnchor(joint) {
     const idx = this.jointIndex.get(joint);

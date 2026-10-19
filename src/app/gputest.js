@@ -238,10 +238,12 @@ export async function runGpuTests(existingBackend = null, progress = null) {
     // WGSL error there is the failure most likely to break the sandbox on a
     // machine where the compute path is fine.
     progress?.('compiling render shaders');
-    const { RENDER_SHADER } = await import('../render/renderer_webgpu.js');
-    const { errors: renderErrors } = await compileShaderModule(
-      backend.device, RENDER_SHADER, 'avbd-render'
-    );
+    const { RENDER_SHADER, POST_SHADER } = await import('../render/renderer_webgpu.js');
+    const renderErrors = [];
+    for (const [label, code] of [['avbd-render', RENDER_SHADER], ['avbd-post', POST_SHADER]]) {
+      const { errors } = await compileShaderModule(backend.device, code, label);
+      renderErrors.push(...errors.map((m) => ({ ...m, message: `${label}: ${m.message}` })));
+    }
     report.renderShader = renderErrors.length
       ? renderErrors.map((m) => `${m.lineNum}:${m.linePos} ${m.message}`)
       : 'compiles';

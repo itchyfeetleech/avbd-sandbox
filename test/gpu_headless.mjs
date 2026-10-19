@@ -100,13 +100,15 @@ check(
   // pass with renderer_webgpu.js in a state that would not even parse, because
   // nothing here imported it. `tools/check-wgsl.mjs` is a lint over the source
   // text, not a compile, so it cannot stand in for this.
-  const { RENDER_SHADER } = await import('../src/render/renderer_webgpu.js');
-  const { errors } = await compileShaderModule(backend.device, RENDER_SHADER);
-  check(
-    'the render module compiles',
-    errors.length === 0,
-    errors.map((m) => `${m.lineNum}:${m.linePos} ${m.message}`).join('\n        ')
-  );
+  const { RENDER_SHADER, POST_SHADER } = await import('../src/render/renderer_webgpu.js');
+  for (const [name, code] of [['render', RENDER_SHADER], ['post-processing', POST_SHADER]]) {
+    const { errors } = await compileShaderModule(backend.device, code);
+    check(
+      `the ${name} module compiles`,
+      errors.length === 0,
+      errors.map((m) => `${m.lineNum}:${m.linePos} ${m.message}`).join('\n        ')
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
