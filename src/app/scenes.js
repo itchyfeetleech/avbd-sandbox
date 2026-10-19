@@ -12,7 +12,24 @@
 import { Rigid } from '../physics/rigid.js';
 import { Joint } from '../physics/joint.js';
 import { Spring } from '../physics/spring.js';
-import { rad } from '../math/maths.js';
+import { rad, quat } from '../math/maths.js';
+import {
+  addBlockTower,
+  addFrameBuilding,
+  addGaltonBoard,
+  addRagdoll,
+  addStairs,
+  addSuspensionBridge,
+  addTowerCrane,
+  addWreckingBall,
+  axisAngle,
+  RAGDOLL_BODY_COUNT,
+  FINISH_GLOSS,
+  FINISH_METAL,
+  RAGDOLL_PANTS,
+  RAGDOLL_SHIRTS,
+  RAGDOLL_SKIN,
+} from './builders.js';
 
 // A palette that stays readable in a dense pile: varied hue, similar value.
 const PALETTE = [
@@ -27,6 +44,24 @@ const PALETTE = [
 ];
 
 const STATIC_COLOR = [0.30, 0.32, 0.36];
+/** Fixed fittings: rope hooks, cable anchors. */
+const ANCHOR_COLOR = [0.36, 0.38, 0.42];
+/** Playing-card backs, and the cream of the decks laid across them. */
+const CARD_COLORS = [
+  [0.78, 0.22, 0.24],
+  [0.20, 0.32, 0.62],
+  [0.84, 0.30, 0.30],
+  [0.24, 0.40, 0.70],
+];
+const DECK_COLOR = [0.93, 0.89, 0.80];
+/** Natural and dyed rope. */
+const ROPE_COLORS = [
+  [0.80, 0.66, 0.44],
+  [0.86, 0.36, 0.28],
+  [0.26, 0.48, 0.70],
+  [0.90, 0.74, 0.30],
+  [0.40, 0.62, 0.42],
+];
 
 /**
  * Hard ceiling on bodies in one scene.
@@ -71,6 +106,141 @@ function addGround(solver, friction = 0.5) {
 
 export const SCENES = [
   {
+    id: 'ragdolls',
+    name: 'Ragdoll stairs',
+    blurb:
+      'Ten ragdolls, each ten boxes and a sphere held together by ball sockets with soft angular stiffness, ' +
+      'tumble down a flight of stone steps. Grab one and throw it back up.',
+    build(solver) {
+      addGround(solver, 0.75);
+      const steps = 11;
+      const { top } = addStairs(solver, {
+        origin: [-4, 0, 0], steps, rise: 0.4, run: 0.8, width: 9, landing: 3,
+      });
+      const rand = makeRandom(20251019);
+      for (let i = 0; i < 10; i++) {
+        const wave = i % 2;
+        const y = (i - 4.5) * 0.85 + (rand() - 0.5) * 0.2;
+        // Two waves: one pitched over the top step with a shove, the second
+        // thrown from the landing behind it a moment later, so the flight
+        // fills with bodies rather than with a single line of them.
+        const pitch = 0.35 + rand() * 0.35;
+        addRagdoll(solver, {
+          origin: [-4.4 - wave * 1.5, y, top + 0.01 + wave * 0.8],
+          rotation: axisAngle([rand() * 0.4 - 0.2, 1, 0], pitch),
+          velocity: [3.2 + rand() * 1.4 + wave * 1.2, (rand() - 0.5) * 0.8, 1.2 + wave * 1.5],
+          colors: {
+            skin: RAGDOLL_SKIN[(rand() * RAGDOLL_SKIN.length) | 0],
+            shirt: RAGDOLL_SHIRTS[i % RAGDOLL_SHIRTS.length],
+            pants: RAGDOLL_PANTS[(rand() * RAGDOLL_PANTS.length) | 0],
+          },
+        });
+      }
+      return {
+        camera: { target: [0.2, 0, 1.4], distance: 12.5, azimuth: -0.5, elevation: 0.3 },
+        iterations: 12,
+        environment: 'daylight',
+      };
+    },
+  },
+
+  {
+    id: 'bridge',
+    name: 'Suspension bridge',
+    blurb:
+      'A deck of welded planks hangs from two main cables by steel hangers; the cables are chains of bars ' +
+      'pinned at the towers, so their sag is solved, not drawn. Crates land one after another, then ' +
+      'something heavy: welds snap past their load limit, hangers tear past 5% stretch.',
+    build(solver) {
+      addGround(solver, 0.6);
+      const water = new Rigid(solver, [25.8, 70, 0.12], 0, 0.3, [0, 0, 0.06]);
+      water.color = [0.24, 0.44, 0.56];
+      water.finish = FINISH_GLOSS;
+      const deckZ = 4;
+      addSuspensionBridge(solver, { origin: [0, 0, deckZ], hangerTear: 0.05, deckFracture: 2000 });
+      const rand = makeRandom(20251020);
+      // Crates queued above the deck, each one higher, so they land in turn.
+      for (let i = 0; i < 7; i++) {
+        const s = 0.8 + rand() * 0.5;
+        const crate = new Rigid(solver, [s, s, s], 2, 0.7, [
+          -9 + i * 3 + (rand() - 0.5), (rand() - 0.5) * 1.2, deckZ + 1.5 + i * 1.6,
+        ]);
+        tint(crate, i + 2);
+      }
+      // And the load it was not built for, arriving at mid-span about two
+      // seconds in.
+      const ball = Rigid.sphere(solver, 2.4, 22, 0.5, [-14, 0, 28], [6.2, 0, 0]);
+      ball.color = [0.26, 0.27, 0.30];
+      ball.finish = FINISH_METAL;
+      return {
+        camera: { target: [0, 0, 3.5], distance: 30, azimuth: -1.05, elevation: 0.2 },
+        iterations: 14,
+        environment: 'dusk',
+      };
+    },
+  },
+
+  {
+    id: 'wrecking_ball',
+    name: 'Wrecking ball',
+    blurb:
+      'A tower crane lets go of a 67 kg ball on a chain of steel bars. The seven-storey frame in its ' +
+      'path is columns and floor slabs stacked on friction alone: nothing holds it up but contact.',
+    build(solver) {
+      addGround(solver, 0.7);
+      const front = 1;
+      const diameter = 2.2;
+      addFrameBuilding(solver, { origin: [front, 0, 0], floors: 7 });
+      const crane = addTowerCrane(solver, { tip: [front - diameter / 2 - 0.15, 0, 18] });
+      addWreckingBall(solver, {
+        anchorBody: crane.jib, pivot: crane.tip, length: 11, angle: rad(65), diameter,
+        barThickness: 0.18,
+      });
+      return {
+        camera: { target: [-3, 0, 9.5], distance: 35, azimuth: -1.32, elevation: 0.1 },
+        iterations: 12,
+        environment: 'daylight',
+      };
+    },
+  },
+
+  {
+    id: 'galton',
+    name: 'Galton board',
+    blurb:
+      '280 balls pour from a hopper through twelve rows of pegs into bins. Each peg turns a ball left ' +
+      'or right more or less at random, so the bins fill toward a bell curve.',
+    build(solver) {
+      addGround(solver, 0.5);
+      const { top } = addGaltonBoard(solver, { origin: [0, 0, 0] });
+      return {
+        camera: { target: [0, 0, top / 2 - 0.5], distance: 34, azimuth: Math.PI / 2 - 0.2, elevation: 0.05 },
+        iterations: 8,
+        environment: 'studio',
+        occlusionScale: 0.3,
+      };
+    },
+  },
+
+  {
+    id: 'block_tower',
+    name: 'Block tower',
+    blurb:
+      'Eighteen levels of wooden blocks, a game already under way: eight blocks pulled from below and ' +
+      'stacked on top. Friction alone holds it. Drag a block out with the grab tool, or throw something.',
+    build(solver) {
+      addGround(solver, 0.6);
+      const { height } = addBlockTower(solver, { origin: [0, 0, 0], seed: 20251021 });
+      return {
+        camera: { target: [0, 0, height * 0.45], distance: 15, azimuth: -0.82, elevation: 0.2 },
+        iterations: 12,
+        environment: 'studio',
+        occlusionScale: 0.6,
+      };
+    },
+  },
+
+  {
     id: 'pyramid',
     name: 'Pyramid',
     blurb: 'Frictional stacking. Every layer is held up by contact friction alone.',
@@ -108,7 +278,11 @@ export const SCENES = [
       // at 211 bodies, and far less on the GPU backend) and buys 9x less
       // penetration and 11x less buzzing. The iterations slider goes lower for
       // anyone testing the paper's low-iteration claim.
-      return { camera: { target: [0, 1, 4], distance: 26 }, bodies: n, iterations: 16 };
+      return {
+        camera: { target: [0, 0.5, 3.6], distance: 23, azimuth: -1.05, elevation: 0.3 },
+        bodies: n,
+        iterations: 16,
+      };
     },
   },
 
@@ -129,7 +303,7 @@ export const SCENES = [
           tint(b, i);
         }
       }
-      return { camera: { target: [0, 0, 8], distance: 30 } };
+      return { camera: { target: [0, 0, 8], distance: 30, azimuth: -1.2, elevation: 0.14 } };
     },
   },
 
@@ -149,53 +323,67 @@ export const SCENES = [
         topZ += size;
         size *= 1.55;
       }
-      return { camera: { target: [0, 0, 6], distance: 24 } };
+      return {
+        camera: { target: [0, 0, 7.5], distance: 33, azimuth: -0.95, elevation: 0.2 },
+      };
     },
   },
 
   {
     id: 'card_tower',
-    name: 'Card tower  (Fig. 6)',
+    name: 'House of cards  (Fig. 6)',
     blurb:
-      'Very light bodies held up purely by static friction. The paper notes VBD needs contact stiffness so high that cards behave as if heavy; AVBD needs no tuning.',
+      'Light cards held up purely by static friction: each pair leans on the other, and decks bridge the pairs. The paper notes VBD needs contact stiffness so high that cards behave as if heavy; AVBD needs no tuning.',
     build(solver) {
-      addGround(solver, 0.9);
-      const levels = 5;
-      const cardH = 2.0;
-      const cardT = 0.12;
-      const span = 1.5;
-      let z = 0;
+      // Card on card at the apex is the demanding contact here: below about
+      // 1.1 the top pairs rack sideways and fall within seconds, at any
+      // iteration count, because it is a friction limit, not a convergence one.
+      const friction = 1.2;
+      addGround(solver, friction);
+      const levels = 6;
+      const H = 2.0;          // card height
+      const T = 0.06;         // card thickness
+      const W = 1.4;          // card width
+      const lean = rad(17);   // from vertical
+      const spacing = 2.0;    // between neighbouring apexes
+      const sin = Math.sin(lean);
+      const cos = Math.cos(lean);
+      // Centre offset that puts the two inner top edges exactly together, and
+      // the heights at which the lowest edge touches the base and the outer
+      // top edges carry the deck above.
+      const offset = (H / 2) * sin + (T / 2) * cos;
+      const rise = (H / 2) * cos + (T / 2) * sin;
+      const top = H * cos + T * sin;
+      const deckLength = spacing + 0.36;
+      const cardColor = (lvl, i) => CARD_COLORS[(lvl * 3 + i) % CARD_COLORS.length];
 
+      let base = 0;
       for (let lvl = 0; lvl < levels; lvl++) {
         const count = levels - lvl;
-        const width = count * span * 2;
-        for (let i = 0; i < count; i++) {
-          const x = -width / 2 + span + i * span * 2;
-          // Two leaning cards forming an A
-          for (const s of [-1, 1]) {
-            const b = new Rigid(solver, [cardT, 1.4, cardH], 1, 0.9, [
-              x + s * 0.42,
-              0,
-              z + cardH / 2,
-            ]);
-            b.setOrientation([0, 1, 0], rad(-16 * s));
-            tint(b, lvl);
+        const xs = Array.from({ length: count }, (_, i) => (i - (count - 1) / 2) * spacing);
+        xs.forEach((x, i) => {
+          for (const side of [-1, 1]) {
+            const card = new Rigid(solver, [T, W, H], 0.6, friction, [x + side * offset, 0, base + rise]);
+            // The left card leans right and the right card left, toward the apex.
+            card.setOrientation([0, 1, 0], -side * lean);
+            card.color = cardColor(lvl, i);
           }
+        });
+        base += top + 0.002;
+        // Decks bridge neighbouring apexes; the next level stands on them.
+        for (let i = 0; i + 1 < count; i++) {
+          const deck = new Rigid(
+            solver, [deckLength, W, T], 0.6, friction,
+            [(xs[i] + xs[i + 1]) / 2, 0, base + T / 2]
+          );
+          deck.color = DECK_COLOR;
         }
-        z += cardH * 0.97;
-        // Horizontal deck on top
-        for (let i = 0; i < count; i++) {
-          const x = -width / 2 + span + i * span * 2;
-          const b = new Rigid(solver, [span * 2 * 0.96, 1.4, cardT], 1, 0.9, [
-            x,
-            0,
-            z + cardT / 2,
-          ]);
-          b.color = [0.78, 0.74, 0.66];
-        }
-        z += cardT;
+        base += T + 0.002;
       }
-      return { camera: { target: [0, 0, 5], distance: 24 } };
+      return {
+        camera: { target: [0, 0, 5.5], distance: 23, azimuth: -1.25, elevation: 0.22 },
+        environment: 'dusk',
+      };
     },
   },
 
@@ -203,23 +391,25 @@ export const SCENES = [
     id: 'pendulum',
     name: 'Heavy pendulum  (Fig. 7)',
     blurb:
-      'A 50-link chain of hard ball-socket constraints carrying a heavy mass — roughly a 50,000:1 mass ratio. Dual methods stretch badly here; AVBD holds the chain.',
+      'A 50-link chain of hard ball-socket constraints swinging a heavy mass: a 26,000:1 mass ratio. ' +
+      'Dual methods stretch badly here; AVBD holds the chain.',
     build(solver) {
       addGround(solver);
       const N = 50;
       const link = 0.5;
+      const anchor = [0, 0, 34];
+      // Released from 40 degrees off vertical, toward -x. Every part shares
+      // the one rotation, so each socket starts satisfied (see builders.js).
+      const angle = rad(40);
+      const q = axisAngle([0, 1, 0], angle);
+      const along = (s) => [anchor[0] - Math.sin(angle) * s, anchor[1], anchor[2] - Math.cos(angle) * s];
       let prev = null;
-      const topZ = 34;
 
       for (let i = 0; i < N; i++) {
         const isAnchor = i === 0;
-        const b = new Rigid(
-          solver,
-          [link, link * 0.5, link],
-          isAnchor ? 0 : 1,
-          0.4,
-          [0, 0, topZ - i * link]
-        );
+        const b = new Rigid(solver, [link, link * 0.5, link], isAnchor ? 0 : 1, 0.4, along(i * link));
+        b.positionAng.set(q);
+        b.initialAng.set(q);
         b.color = isAnchor ? STATIC_COLOR : PALETTE[(i >> 2) % PALETTE.length];
         if (prev) {
           new Joint(solver, prev, b, [0, 0, -link / 2], [0, 0, link / 2]);
@@ -229,15 +419,22 @@ export const SCENES = [
 
       // The heavy mass at the end
       const ballSize = 3.0;
-      const ball = new Rigid(solver, [ballSize, ballSize, ballSize], 60, 0.5, [
-        0,
-        0,
-        topZ - N * link - ballSize / 2 + link / 2,
-      ]);
+      const ball = new Rigid(
+        solver, [ballSize, ballSize, ballSize], 60, 0.5,
+        along((N - 1) * link + link / 2 + ballSize / 2)
+      );
+      ball.positionAng.set(q);
+      ball.initialAng.set(q);
       ball.color = [0.88, 0.30, 0.26];
       new Joint(solver, prev, ball, [0, 0, -link / 2], [0, 0, ballSize / 2]);
 
-      return { camera: { target: [0, 0, 16], distance: 42 }, kick: ball };
+      // The swing loads the chain to about twice the ball's weight. At 10
+      // passes the sockets open by up to 19 cm on the first downswing; 32
+      // keeps them within 7 cm, and the solver is still cheap at 51 bodies.
+      return {
+        camera: { target: [0, 0, 19], distance: 52, azimuth: -1.3, elevation: 0.1 },
+        iterations: 32,
+      };
     },
   },
 
@@ -286,7 +483,9 @@ export const SCENES = [
       right.color = [0.88, 0.30, 0.26];
       new Joint(solver, prev, right, prevAnchor, [-massSize / 2, 0, 0]);
 
-      return { camera: { target: [0, 0, 12], distance: 44 } };
+      return {
+        camera: { target: [0, 0, 11], distance: 44, azimuth: -1.3, elevation: 0.14 },
+      };
     },
   },
 
@@ -310,7 +509,9 @@ export const SCENES = [
         }
         prev = b;
       }
-      return { camera: { target: [0, 0, 11], distance: 32 } };
+      return {
+        camera: { target: [0, 0, 11], distance: 32, azimuth: -1.45, elevation: 0.1 },
+      };
     },
   },
 
@@ -477,7 +678,10 @@ export const SCENES = [
         );
       }
 
-      return { camera: { target: [3, 0, 12], distance: 32 } };
+      return {
+        camera: { target: [2, 0, 11], distance: 30, azimuth: -1.15, elevation: 0.16 },
+        environment: 'dusk',
+      };
     },
   },
 
@@ -544,7 +748,10 @@ export const SCENES = [
       // The nudge that starts it
       const pusher = new Rigid(solver, [1.2, 1.2, 1.2], 6, 0.4, [11.5, -3.4, 1.4], [-3, 7, 0]);
       pusher.color = [0.9, 0.33, 0.27];
-      return { camera: { target: [0, 4, 2], distance: 40 } };
+      return {
+        camera: { target: [0, 3, 1.5], distance: 36, azimuth: -1.2, elevation: 0.42 },
+        environment: 'dusk',
+      };
     },
   },
 
@@ -728,7 +935,10 @@ export const SCENES = [
         height: 15,
         seed: 20260730,
       });
-      return { camera: { target: [0, 0, 7], distance: 30 }, iterations: 14 };
+      return {
+        camera: { target: [0, 0, 6.5], distance: 27, azimuth: -1.3, elevation: 0.16 },
+        iterations: 14,
+      };
     },
   },
 
@@ -738,7 +948,7 @@ export const SCENES = [
     blurb: 'Nothing but ground. Use the spawn controls and build whatever you like.',
     build(solver) {
       addGround(solver);
-      return { camera: { target: [0, 0, 3], distance: 24 } };
+      return { camera: { target: [0, 0, 3], distance: 24 }, environment: 'night' };
     },
   },
 ];
@@ -773,6 +983,7 @@ export const SPAWN_PATTERNS = [
   { id: 'funnel', name: 'Funnel drop' },
   { id: 'fabric', name: 'Fabric sheet' },
   { id: 'rope', name: 'Ropes' },
+  { id: 'ragdoll', name: 'Ragdolls' },
 ];
 
 const DEFAULT_SPAWN_SIZE = 0.9;
@@ -1118,6 +1329,9 @@ export function spawnPattern(solver, options = {}) {
         let previous = null;
         let previous2 = null;
         const x = ox + (strand - (strands - 1) * 0.5) * spacing * 2.2;
+        // One colour per strand, drawn as a continuous capsule chain through
+        // the nodes (see render/links.js); the nodes themselves stay hidden.
+        const ropeColor = ROPE_COLORS[(rand() * ROPE_COLORS.length) | 0];
         // Distribute the remainder across the first strands. Using one global
         // ceil() left the final strand with as few as four nodes at count=2500.
         const strandLength = baseStrandLength + (strand < longerStrands ? 1 : 0);
@@ -1137,7 +1351,8 @@ export function spawnPattern(solver, options = {}) {
           b.softBodyKind = 'rope';
           b.softAnchor = i === 0;
           b.softStrand = strand;
-          tint(b, strand + i);
+          b.color = i === 0 ? ANCHOR_COLOR : ropeColor;
+          b.hiddenByLinks = i > 0;
           created.push(b);
           if (previous) {
             const link = new Spring(
@@ -1146,6 +1361,7 @@ export function spawnPattern(solver, options = {}) {
             link.softBodyKind = 'rope';
             link.softLinkKind = 'structural';
             link.debugColor = [0.42, 0.72, 0.88];
+            link.visual = { radius: diameter * 0.5, color: ropeColor, finish: 3 };
           }
           if (previous2) {
             const link = new Spring(
@@ -1357,6 +1573,54 @@ export function spawnPattern(solver, options = {}) {
           const r = Math.sqrt(rand()) * size * 3;
           return [ox + Math.cos(a) * r, oy + Math.sin(a) * r, z];
         }));
+      }
+      break;
+    }
+
+    case 'ragdoll': {
+      // `count` stays a body budget, as for every recipe: each figure takes
+      // RAGDOLL_BODY_COUNT of it. They drop in a loose grid, each turned at
+      // random so they land in a heap rather than standing in rows.
+      const figures = Math.floor(count / RAGDOLL_BODY_COUNT);
+      const scale = size / DEFAULT_SPAWN_SIZE;
+      const pitch = 2.2 * scale;
+      const columns = Math.max(1, Math.ceil(Math.sqrt(figures)));
+      const perLayer = columns * columns;
+      for (let i = 0; i < figures; i++) {
+        const layer = Math.floor(i / perLayer);
+        const cell = i % perLayer;
+        const cx = ((cell % columns) - (columns - 1) / 2) * pitch;
+        const cy = (Math.floor(cell / columns) - (columns - 1) / 2) * pitch;
+        const axis = [rand() - 0.5, rand() - 0.5, rand() - 0.5];
+        const angle = rand() * Math.PI * 2;
+        // The figure is built around its soles; lift its middle to the slot.
+        const centre = [
+          ox + cx + (rand() - 0.5) * 0.3 * scale,
+          oy + cy + (rand() - 0.5) * 0.3 * scale,
+          oz + height + (1.1 + layer * 2.2) * scale,
+        ];
+        const q = axisAngle(axis, angle);
+        const mid = [0, 0, 0.9 * scale];
+        const turned = [0, 0, 0];
+        quat.rotateVec(turned, q, mid);
+        const { bodies } = addRagdoll(solver, {
+          origin: [centre[0] - turned[0], centre[1] - turned[1], centre[2] - turned[2]],
+          scale,
+          rotation: q,
+          velocity: [(rand() - 0.5) * 2, (rand() - 0.5) * 2, -2],
+          density,
+          friction,
+          colors: {
+            skin: RAGDOLL_SKIN[(rand() * RAGDOLL_SKIN.length) | 0],
+            shirt: RAGDOLL_SHIRTS[(rand() * RAGDOLL_SHIRTS.length) | 0],
+            pants: RAGDOLL_PANTS[(rand() * RAGDOLL_PANTS.length) | 0],
+          },
+        });
+        for (const b of bodies) {
+          b.setMaterial({ restitution });
+          b.spawnedBySandbox = true;
+          created.push(b);
+        }
       }
       break;
     }

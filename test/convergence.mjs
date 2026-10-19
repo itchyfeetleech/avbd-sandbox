@@ -188,15 +188,18 @@ for (const id of ['pyramid', 'card_tower']) {
 
 // --- Why post-stabilization is not the fix ---------------------------------
 //
-// It settles a plain box stack beautifully, but in a shear-heavy scene its
-// single projection pass injects energy instead of removing it. This is the
-// measurement behind the long comment on `postStabilize` in solver.js.
+// It settles a plain box stack beautifully, but in a scene with many
+// frictional contacts its single projection pass injects energy instead of
+// removing it. This is the measurement behind the long comment on
+// `postStabilize` in solver.js. (The card tower showed it too until it was
+// rebuilt to stand: at friction 1.2 it no longer slips enough to.)
 {
-  const base = measured.card_tower["as shipped"].keRatio;
-  const post = measured.card_tower.postStabilize.keRatio;
-  check('card_tower: the default dissipates energy', base < 1.0,
-    `KE tail/head ${base.toFixed(3)}`);
-  check('card_tower: postStabilize injects energy', post > 2.0,
+  for (const scene of ['pyramid', 'card_tower']) {
+    const base = measured[scene]['as shipped'].keRatio;
+    check(`${scene}: the default dissipates energy`, base < 1.0, `KE tail/head ${base.toFixed(3)}`);
+  }
+  const post = measured.pyramid.postStabilize.keRatio;
+  check('pyramid: postStabilize injects energy', post > 2.0,
     `KE tail/head ${post.toFixed(2)} — why it defaults to off`);
 }
 
