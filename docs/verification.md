@@ -194,6 +194,12 @@ and for as long as that went unnoticed the GPU backend could not start in Chrome
 `node tools/browsertest.mjs --headless` runs Chrome or Chromium with WebGPU on
 SwiftShader, needs no GPU or display, and is what CI runs.
 
+The compilers also round differently, and a stiff scene can magnify that. With three
+colouring rounds a step, the ragdoll scene held on Deno, but in Chrome on SwiftShader its
+trajectory met a colouring conflict at the wrong moment and a knee opened from 1 mm to
+53 m within 18 steps. The self-test now carries that scene, and fails at three rounds
+where the shipped five pass.
+
 Neither replaces the real driver. Both software devices are single threaded, IEEE-exact
 and have no bandwidth wall, so an entire class of fault is invisible to them. A
 regression that passed every software check and CPU parity, and broke instantly on

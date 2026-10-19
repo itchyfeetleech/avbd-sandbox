@@ -57,6 +57,19 @@ anchor-proximity fallback when clipping topology changes. In GPU mode the render
 reads body poses straight out of the solver's storage buffer, so pose data never
 crosses back over the bus.
 
+The colouring runs as Jacobi rounds that converge to the sequential greedy colouring in
+priority order, one dependency link per round. Priority is a 32-bit integer hash of the
+body index rather than the index itself: with index priority, a chain built in index
+order (a rope, a cable, a pendulum) needs one round per link, so after the fixed round
+budget most of it still shares colours and updates concurrently, and a 27-bar cable
+diverged. Hashed, the dependency chains are short whatever order a scene was built in.
+
+Each step runs five rounds, seeded with the previous step's colours. A conflict left over
+degrades to a Jacobi update for that step, which contacts tolerate and light bodies on hard
+joints may not: at three rounds a ragdoll's knee opened from 1 mm to 53 m within 18 steps
+under Chrome's compiler on SwiftShader. The browser self-test keeps that scene among its
+checks.
+
 Playground topology edits retain the settled manifold and graph-colouring history of
 surviving bodies by stable identity, including order-preserving erase and culling
 compaction, so destruction does not globally remove a large structure's support.
@@ -65,6 +78,48 @@ saturated, completion-aware pacing sheds simulation backlog instead of queuing p
 ahead of presentation.
 
 `?nogpu=1` forces the CPU engine and the WebGL2 renderer.
+
+## Rendering
+
+Both renderers, WebGL2 and WebGPU, draw the same image from the same inputs. A lighting
+environment (`src/render/environment.js`: Daylight, Studio, Dusk, Blueprint) supplies the
+sky, the hemisphere ambient, the sun, height fog, the ground and the final grade as eight
+`vec4`s that both shaders declare identically, so switching renderer does not change the
+look. Scenes name the environment they were composed for; the World tab can override it.
+
+Shading is linear: sRGB colours are decoded, lit with Blinn-Phong and a Schlick Fresnel
+term, and tone mapped with ACES. A body's `finish` selects satin, gloss, metal, matte or
+stone (matte with square edges, so architecture built from several static blocks reads as
+one mass). Boxes get rounded-edge normals that fade out below a pixel; shadows use 4×4 PCF.
+The scene pass is multisampled, and screen-space ambient occlusion runs over its depth,
+blurred by an 8-tap separable filter that keeps a tap only when its inverse depth lies on
+the plane through the centre pixel — inverse depth is affine across a plane in screen
+space, so the test is exact on flat surfaces and drops taps from other surfaces at edges.
+`occlusionScale` lets a scene of small parts tighten the occlusion radius.
+
+A `Joint` or `Spring` with a `visual` record is drawn as a capsule between its anchors
+(`src/render/links.js`); ropes hide their nodes and read as one tube, and suspension
+cables and hangers use the same path. The WebGPU renderer reads anchor poses and break
+flags straight from the solver's arenas, so a hanger that tears on the GPU disappears in
+the same frame without a readback.
+
+Moving bodies are drawn inset by half the collision margin so that resting contacts meet
+flush (see [Collision detection](#collision-detection)); static bodies are not, because
+stacked static blocks would otherwise show slits between them. The camera can shift its
+image centre, which the app uses to centre the scene beside the open sidebar.
+
+## Building articulated scenes
+
+A `Joint`'s angular rows pull its two bodies toward the same world orientation, not toward
+their relative pose at creation, so articulated structures (ragdolls, the pendulum, crane
+chains) are built with every part at one shared orientation. Each part starts a small gap
+from its neighbours with the socket in the gap, so every constraint starts exactly
+satisfied and nothing starts in contact. `src/app/builders.js` collects the structures the
+scenes and the spawner use: ragdolls, stairs, the suspension bridge, the tower crane and
+wrecking ball, the frame building, the Galton board and the block tower. Its comments
+record the measurements behind their proportions, such as the hanger stiffness that keeps
+a broken bridge deck from being flung upward and the peg spacing that gives the Galton
+board its bell curve.
 
 ## Manifold width
 
