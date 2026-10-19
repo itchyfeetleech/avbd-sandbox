@@ -370,6 +370,18 @@
   .row > * { flex: 1 1 0; }
   .row + .row { margin-top: 7px; }
 
+  .field-pair {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  button.toggle[aria-pressed="true"] {
+    border-color: rgba(215, 255, 104, 0.55);
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+
   .transport {
     display: grid;
     grid-template-columns: 1.25fr 1fr 0.72fr;
@@ -834,7 +846,7 @@
       <section class="section">
         <div class="section-heading">
           <h2>Choose a world</h2>
-          <span id="sceneCount">17 scenes</span>
+          <span id="sceneCount">22 scenes</span>
         </div>
         <div class="field">
           <label for="scene">Scene</label>
@@ -851,17 +863,33 @@
 
       <section class="section">
         <div class="section-heading"><h2>Playback</h2></div>
-        <div class="field compact">
-          <label for="timeScale">Speed</label>
-          <select autocomplete="off" id="timeScale">
-            <option value="0.25">Slow · 0.25×</option>
-            <option value="0.5">Half · 0.5×</option>
-            <option value="1" selected>Real time · 1×</option>
-          </select>
+        <div class="field-pair">
+          <div class="field compact">
+            <label for="timeScale">Speed</label>
+            <select autocomplete="off" id="timeScale">
+              <option value="0.25">Slow · 0.25×</option>
+              <option value="0.5">Half · 0.5×</option>
+              <option value="1" selected>Real time · 1×</option>
+            </select>
+          </div>
+          <div class="field compact">
+            <label for="lighting">Lighting</label>
+            <select autocomplete="off" id="lighting">
+              <option value="auto" selected>Scene default</option>
+              <option value="daylight">Daylight</option>
+              <option value="studio">Studio</option>
+              <option value="dusk">Dusk</option>
+              <option value="night">Blueprint</option>
+            </select>
+          </div>
         </div>
         <div class="row">
           <button id="cameraHome" type="button">Frame scene</button>
+          <button id="orbitToggle" class="toggle" type="button" aria-pressed="false" title="Slowly circle the scene (O)">Slow orbit</button>
+        </div>
+        <div class="row">
           <button id="shareWorld" type="button">Copy scene link</button>
+          <button id="saveImage" type="button" title="Save the current view as a PNG (P)">Save image</button>
         </div>
       </section>
 
@@ -870,7 +898,7 @@
         <div class="details-body">
           <label class="check">
             <input autocomplete="off" type="checkbox" id="showJoints" checked>
-            <span>Joints, ropes, and springs</span>
+            <span>Joint and spring guides <small class="support">Ropes and cables are always drawn.</small></span>
           </label>
           <label class="check">
             <input autocomplete="off" type="checkbox" id="showGround" checked>
@@ -879,6 +907,10 @@
           <label class="check">
             <input autocomplete="off" type="checkbox" id="showShadows" checked>
             <span>Shadows</span>
+          </label>
+          <label class="check">
+            <input autocomplete="off" type="checkbox" id="showOcclusion" checked>
+            <span>Ambient occlusion <small class="support">Soft contact shadowing in creases and under objects.</small></span>
           </label>
           <label class="check">
             <input autocomplete="off" type="checkbox" id="showContacts">
@@ -1251,6 +1283,8 @@
       <kbd>R</kbd><span>Restart the scene</span>
       <kbd>F</kbd><span>Fire toward the camera focus</span>
       <kbd>Home</kbd><span>Frame the scene</span>
+      <kbd>O</kbd><span>Slowly orbit the scene</span>
+      <kbd>P</kbd><span>Save the view as an image</span>
       <kbd>← → ↑ ↓</kbd><span>Orbit the camera</span>
       <kbd>+ −</kbd><span>Zoom in or out</span>
       <kbd>H</kbd><span>Show or hide controls</span>

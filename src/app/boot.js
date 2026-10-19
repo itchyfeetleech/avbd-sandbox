@@ -25,6 +25,8 @@ import { vec3, clamp } from '../math/maths.js';
 import { Renderer } from '../render/renderer.js';
 import { RendererWebGPU } from '../render/renderer_webgpu.js';
 import { OrbitCamera } from '../render/camera.js';
+import { ENVIRONMENTS, DEFAULT_ENVIRONMENT } from '../render/environment.js';
+import { RAGDOLL_BODY_COUNT } from './builders.js';
 import { GpuBackend } from '../physics/gpu/backend.js';
 import {
   SCENES, SCENES_BY_ID, spawnPattern, clearDynamicBodies,
@@ -40,6 +42,10 @@ const $ = (id) => document.getElementById(id);
 const canvas = $('view');
 const solver = new Solver();
 const camera = new OrbitCamera();
+/** The scene a visit without `?scene=` opens on: cheap on the CPU engine, busy from the first frame. */
+const DEFAULT_SCENE = 'ragdolls';
+/** Where a scene that authors no view angle is seen from. */
+const DEFAULT_VIEW_ANGLES = { azimuth: camera.azimuth, elevation: camera.elevation };
 const urlParams = new URLSearchParams(location.search);
 /** A URL switch is on when present, unless set to 0, false, off or no. */
 const urlFlag = (name) =>
@@ -196,11 +202,18 @@ const state = {
   // Set once the graphics engine has stopped (see showRuntimeFailure); async
   // work finishing afterwards must not resume the simulation under it.
   failed: false,
-  sceneId: SCENES_BY_ID[urlParams.get('scene')]?.id ?? 'soft_shapes',
+  sceneId: SCENES_BY_ID[urlParams.get('scene')]?.id ?? DEFAULT_SCENE,
   activeTool: 'grab',
   timeScale: 1,
   showContacts: false,
   showJoints: true,
+  /** 'auto' follows each scene's own lighting; otherwise a key of ENVIRONMENTS. */
+  lighting: Object.hasOwn(ENVIRONMENTS, urlParams.get('env') ?? '') ? urlParams.get('env') : 'auto',
+  sceneLighting: DEFAULT_ENVIRONMENT,
+  /** Slow showcase turn of the camera; any manual orbit stops it. */
+  orbiting: urlFlag('orbit'),
+  /** Set by "Save image"; served right after the next frame is drawn. */
+  imageRequested: false,
   // Always start on the CPU engine; the GPU backend takes over when its
   // pipelines are ready (see the compile task at the end of this file).
   backend: 'cpu',
@@ -394,7 +407,7 @@ function loadScene(id, { silent = false } = {}) {
     return;
   }
 
-  let scene = SCENES_BY_ID[id] || SCENES_BY_ID.soft_shapes || SCENES[0];
+  let scene = SCENES_BY_ID[id] || SCENES_BY_ID[DEFAULT_SCENE] || SCENES[0];
   if (scene.gpuOnly && !gpuBackend?.ready) {
     pendingGpuSceneId = gpuBackend && gpuPipelinesPending ? scene.id : null;
     scene = SCENES_BY_ID.soft_shapes || SCENES[0];
@@ -408,6 +421,7 @@ function loadScene(id, { silent = false } = {}) {
   } else {
     pendingGpuSceneId = null;
   }
+  const previousSceneId = state.sceneId;
   state.sceneId = scene.id;
 
   // Discarding everything: no need to sync GPU state back first.
@@ -428,14 +442,20 @@ function loadScene(id, { silent = false } = {}) {
   const ground = solver.bodies.find((b) => b.hideFromRenderer);
   renderer.groundHeight = ground ? ground.positionLin[2] + ground.size[2] / 2 : 0;
 
-  if (result.camera) {
-    if (result.camera.target) camera.target = result.camera.target.slice();
-    if (result.camera.distance) camera.distance = result.camera.distance;
-  }
+  // A new scene is seen from its authored view. A restart keeps whatever
+  // view the user has found; Frame scene goes back to the authored one.
+  const view = result.camera ?? {};
+  const restarting = cameraHome !== null && scene.id === previousSceneId;
   cameraHome = {
-    target: camera.target.slice(),
-    distance: camera.distance,
+    target: view.target ? view.target.slice() : camera.target.slice(),
+    distance: view.distance ?? camera.distance,
+    azimuth: view.azimuth ?? DEFAULT_VIEW_ANGLES.azimuth,
+    elevation: view.elevation ?? DEFAULT_VIEW_ANGLES.elevation,
   };
+  if (!restarting) applyCameraHome();
+  state.sceneLighting = ENVIRONMENTS[result.environment] ? result.environment : DEFAULT_ENVIRONMENT;
+  applyLighting();
+  renderer.occlusionScale = result.occlusionScale ?? 1;
   activeSceneIterations = result.iterations ?? 10;
   if (!solverQualityOverridden) {
     solver.iterations = activeSceneIterations;
@@ -478,11 +498,67 @@ function loadScene(id, { silent = false } = {}) {
   if (!silent) showNotice(`${scene.name} ready`);
 }
 
-function frameWorld() {
-  if (!cameraHome) return;
+function applyCameraHome() {
   camera.target = cameraHome.target.slice();
   camera.distance = cameraHome.distance;
+  camera.azimuth = cameraHome.azimuth;
+  camera.elevation = cameraHome.elevation;
+}
+
+function frameWorld() {
+  if (!cameraHome) return;
+  applyCameraHome();
   showNotice('Camera framed to the scene.');
+}
+
+/** The scene's own lighting, unless the user picked one. */
+function applyLighting() {
+  renderer.setEnvironment(state.lighting === 'auto' ? state.sceneLighting : state.lighting);
+}
+
+function setOrbiting(on) {
+  state.orbiting = on;
+  $('orbitToggle').setAttribute('aria-pressed', String(on));
+}
+
+/**
+ * Save the frame just drawn as a PNG. WebGPU hands it over as `frame`, a
+ * readback of the presented texture (see captureNextFrame). WebGL2 has none:
+ * called in the same task as the draw, the canvas's drawing buffer still
+ * holds the frame, so the canvas is copied directly.
+ *
+ * Only the part beside the sidebar is kept. The view is centred there (see
+ * updateViewOffset), so the image is what the user sees, framed as they see
+ * it, rather than the scene pushed to one side of a wider picture.
+ */
+function saveImage(frame) {
+  const left = Math.round(Math.max(0, camera.viewOffsetX) * canvas.width);
+  const copy = document.createElement('canvas');
+  copy.width = canvas.width - left;
+  copy.height = canvas.height;
+  const context = copy.getContext('2d');
+  const download = (blob) => {
+    if (!blob) {
+      showNotice('This browser could not capture the view.', 'warn', 4200);
+      return;
+    }
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    link.download = `avbd-${state.sceneId}-${stamp}.png`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 4000);
+    showNotice('Saved the view as a PNG.', 'good');
+  };
+  if (!frame) {
+    context.drawImage(canvas, left, 0, copy.width, copy.height, 0, 0, copy.width, copy.height);
+    copy.toBlob(download, 'image/png');
+    return;
+  }
+  frame.then((image) => {
+    context.putImageData(image, -left, 0);
+    copy.toBlob(download, 'image/png');
+  }, () => download(null));
 }
 
 // ---------------------------------------------------------------------------
@@ -631,6 +707,8 @@ function eraseBody(body) {
  * over the interaction and left the first one stuck.
  */
 const ORBIT_SPEED = 0.006;
+/** Slow orbit: one turn every 100 s, in radians per millisecond. */
+const ORBIT_RATE = (2 * Math.PI) / 100000;
 /** Movement needed before a camera gesture grabs the pointer, in CSS pixels. */
 const LOCK_THRESHOLD = 3;
 
@@ -789,8 +867,12 @@ canvas.addEventListener('pointermove', (event) => {
     dragDistance += Math.abs(dx) + Math.abs(dy);
     if (wantsLock === false && !isLocked() && dragDistance > LOCK_THRESHOLD) requestLock();
 
-    if (pointerMode === 'orbit') camera.orbit(-dx * ORBIT_SPEED, dy * ORBIT_SPEED);
-    else camera.pan(dx, dy);
+    if (pointerMode === 'orbit') {
+      if (state.orbiting) setOrbiting(false);
+      camera.orbit(-dx * ORBIT_SPEED, dy * ORBIT_SPEED);
+    } else {
+      camera.pan(dx, dy);
+    }
     return;
   }
 
@@ -994,18 +1076,47 @@ function spawnAtRay(ray) {
   if (spawnBudget(1) === 0) return;
   const x = ray.origin[0] + ray.dir[0] * t;
   const y = ray.origin[1] + ray.dir[1] * t;
+  const ragdoll = $('spawnPattern').value === 'ragdoll';
+  if (ragdoll && spawnBudget(RAGDOLL_BODY_COUNT) < RAGDOLL_BODY_COUNT) return;
   const created = mutateTopology(() =>
     spawnPattern(
       solver,
       spawnOptions({
-        pattern: 'cluster',
-        count: 1,
+        pattern: ragdoll ? 'ragdoll' : 'cluster',
+        count: ragdoll ? RAGDOLL_BODY_COUNT : 1,
         origin: [x, y, renderer.groundHeight],
         height,
       })
     )
   );
   if (created) rememberSpawn(created, 'drop stroke', 'paint');
+}
+
+/** The Throw tool with the Ragdolls recipe selected: throw one of them. */
+function launchRagdoll(dir) {
+  if (spawnBudget(RAGDOLL_BODY_COUNT) < RAGDOLL_BODY_COUNT) return;
+  const scale = Number($('spawnSize').value) / 0.9;
+  // Far enough ahead that no limb starts behind the near plane.
+  const clearance = 1.4 * scale + 0.75;
+  const centre = [0, 1, 2].map((i) => camera.eye[i] + dir[i] * clearance);
+  const speed = 30;
+  const created = mutateTopology(() => {
+    const bodies = spawnPattern(solver, spawnOptions({
+      pattern: 'ragdoll',
+      count: RAGDOLL_BODY_COUNT,
+      // The recipe lifts a figure's middle 1.1 x scale above origin + height.
+      origin: [centre[0], centre[1], centre[2] - 1.1 * scale],
+      height: 0,
+    }));
+    for (const b of bodies) {
+      for (let i = 0; i < 3; i++) {
+        b.velocityLin[i] = dir[i] * speed;
+        b.prevVelocityLin[i] = dir[i] * speed;
+      }
+    }
+    return bodies;
+  });
+  if (created) rememberSpawn(created, 'ragdoll throw');
 }
 
 function launchProjectile(ray = null) {
@@ -1020,6 +1131,11 @@ function launchProjectile(ray = null) {
       ];
   const len = Math.hypot(...dir) || 1;
   for (let i = 0; i < 3; i++) dir[i] /= len;
+
+  if ($('spawnPattern').value === 'ragdoll') {
+    launchRagdoll(dir);
+    return;
+  }
 
   const speed = 42;
 
@@ -1070,6 +1186,10 @@ function launchProjectile(ray = null) {
 
 const sceneSelect = $('scene');
 const sceneGroups = [
+  {
+    label: 'Showcase',
+    ids: ['ragdolls', 'bridge', 'wrecking_ball', 'galton', 'block_tower'],
+  },
   {
     label: 'Playground',
     ids: ['soft_shapes', 'sandbox', 'pyramid', 'domino', 'breakable_wall'],
@@ -1214,6 +1334,7 @@ $('spawnShape').addEventListener('change', () => {
 function updateSpawnPatternControls() {
   const fabric = patternSelect.value === 'fabric';
   const soft = fabric || patternSelect.value === 'rope';
+  const ragdoll = patternSelect.value === 'ragdoll';
   const shape = $('spawnShape');
   const variation = $('spawnVar');
   const fabricOptions = $('spawnFabricOptions');
@@ -1225,10 +1346,10 @@ function updateSpawnPatternControls() {
     shape.value = lastRigidShape;
   }
 
-  shape.disabled = soft;
-  variation.disabled = soft;
-  $('spawnShapeField').hidden = soft;
-  $('spawnVarField').hidden = soft;
+  shape.disabled = soft || ragdoll;
+  variation.disabled = soft || ragdoll;
+  $('spawnShapeField').hidden = soft || ragdoll;
+  $('spawnVarField').hidden = soft || ragdoll;
   $('spawnHeightField').hidden = false;
   $('spawnHeight').disabled = false;
   fabricOptions.hidden = !fabric;
@@ -1239,7 +1360,9 @@ function updateSpawnPatternControls() {
     ? 'Fabric draws as a filled sheet; spherical lattice nodes still carry collision.'
     : soft
       ? 'Rope uses spherical nodes joined by visible links; the count buttons choose node count.'
-      : 'Spheres use the exact curved collider; Mixed samples all rigid shapes.';
+      : ragdoll
+        ? `Each ragdoll is ${RAGDOLL_BODY_COUNT} bodies held by ball sockets. Drop paints them, Throw fires them.`
+        : 'Spheres use the exact curved collider; Mixed samples all rigid shapes.';
   $('spawnVarField').title = soft ? 'Soft-object node spacing is uniform.' : '';
   $('spawnFabricTearField').title =
     fabric && !$('spawnFabricTearing').checked
@@ -1247,8 +1370,10 @@ function updateSpawnPatternControls() {
       : '';
   $('launch').title = soft
     ? 'Launch a spherical projectile (soft-object patterns use sphere nodes).'
-    : 'Launch the selected rigid shape.';
-  const unit = soft ? 'nodes' : 'objects';
+    : ragdoll
+      ? 'Throw a ragdoll.'
+      : 'Launch the selected rigid shape.';
+  const unit = soft ? 'nodes' : ragdoll ? 'ragdolls' : 'objects';
   $('spawnAmountUnit').textContent = unit;
   $('spawnNow').setAttribute(
     'aria-label',
@@ -1266,27 +1391,38 @@ let largeSpawnArm = null;
 for (const button of document.querySelectorAll('[data-spawn]')) {
   button.addEventListener('click', () => {
     const requested = Number(button.dataset.spawn);
+    // A ragdoll is several bodies; the budget is always counted in bodies.
+    const per = patternSelect.value === 'ragdoll' ? RAGDOLL_BODY_COUNT : 1;
     const armKey = `${patternSelect.value}:${requested}`;
     const now = performance.now();
     if (
-      requested >= 1000 &&
+      requested * per >= 1000 &&
       (largeSpawnArm?.key !== armKey || largeSpawnArm.expiresAt < now)
     ) {
       largeSpawnArm = { key: armKey, expiresAt: now + 4000 };
+      const what = per > 1
+        ? `${formatNumber(requested)} ragdolls (${formatNumber(requested * per)} bodies)`
+        : `${formatNumber(requested)} objects`;
       showNotice(
-        `This adds ${formatNumber(requested)} objects and may pause slower devices. Click Add again to continue.`,
+        `This adds ${what} and may pause slower devices. Click Add again to continue.`,
         'warn',
         4200
       );
       return;
     }
     largeSpawnArm = null;
-    const count = spawnBudget(requested);
+    const count = Math.floor(spawnBudget(requested * per) / per) * per;
     if (count === 0) return;
     const created = mutateTopology(() => spawnPattern(solver, spawnOptions({ count })));
     if (created) {
       rememberSpawn(created, `${patternSelect.selectedOptions[0]?.textContent ?? 'build'} batch`);
-      showNotice(`Added ${formatNumber(created.length)} ${created.length === 1 ? 'object' : 'objects'}.`, 'good');
+      const figures = created.length / per;
+      showNotice(
+        per > 1
+          ? `Added ${formatNumber(figures)} ragdoll${figures === 1 ? '' : 's'} (${formatNumber(created.length)} bodies).`
+          : `Added ${formatNumber(created.length)} ${created.length === 1 ? 'object' : 'objects'}.`,
+        'good'
+      );
     }
   });
 }
@@ -1402,6 +1538,22 @@ $('timeScale').addEventListener('change', (event) => {
   showNotice(`Playback set to ${state.timeScale}×.`);
 });
 
+$('lighting').value = state.lighting;
+$('lighting').addEventListener('change', (event) => {
+  state.lighting = event.target.value;
+  applyLighting();
+  // Kept in the address, so a copied scene link carries the look too.
+  const nextUrl = new URL(location.href);
+  if (state.lighting === 'auto') nextUrl.searchParams.delete('env');
+  else nextUrl.searchParams.set('env', state.lighting);
+  history.replaceState(null, '', nextUrl);
+  const name = state.lighting === 'auto' ? 'the scene\'s own' : ENVIRONMENTS[state.lighting].name;
+  showNotice(`Lighting: ${name}.`);
+});
+$('orbitToggle').addEventListener('click', () => setOrbiting(!state.orbiting));
+setOrbiting(state.orbiting);
+$('saveImage').addEventListener('click', () => (state.imageRequested = true));
+
 $('resetParams').addEventListener('click', () => {
   const preserved = { broadphase: solver.broadphase, bodyOrder: solver.bodyOrder };
   solver.defaultParams();
@@ -1438,6 +1590,7 @@ $('showContacts').addEventListener('change', (e) => (state.showContacts = e.targ
 $('showJoints').addEventListener('change', (e) => (state.showJoints = e.target.checked));
 $('showGround').addEventListener('change', (e) => (renderer.showGround = e.target.checked));
 $('showShadows').addEventListener('change', (e) => (renderer.showShadows = e.target.checked));
+$('showOcclusion').addEventListener('change', (e) => (renderer.showOcclusion = e.target.checked));
 $('showKillbox').addEventListener('change', (e) => (killbox.show = e.target.checked));
 $('killEnabled').addEventListener('change', (e) => (killbox.enabled = e.target.checked));
 $('killRefit').addEventListener('click', () => killbox.fit());
@@ -1512,8 +1665,26 @@ for (const id of ['spawnFric', 'spawnBounce', 'spawnDens']) {
   });
 }
 
+/**
+ * Where the image centre should sit: in the middle of the canvas area the
+ * open sidebar leaves uncovered, so a scene framed for the whole canvas is
+ * not a third hidden behind the panel. The narrow layout's sidebar is a
+ * temporary sheet over the view, so it does not count. The frame loop eases
+ * the camera toward this as the sidebar slides.
+ */
+let viewOffsetTarget = 0;
+function updateViewOffset() {
+  const sidebar = $('sidebar');
+  const open = !document.body.classList.contains('collapsed') && !narrowControls.matches;
+  const width = canvas.clientWidth;
+  viewOffsetTarget = open && width > 0
+    ? Math.min(0.6, (sidebar.offsetLeft + sidebar.offsetWidth) / width)
+    : 0;
+}
+
 function setSidebarCollapsed(collapsed) {
   document.body.classList.toggle('collapsed', collapsed);
+  updateViewOffset();
   $('toggle').setAttribute('aria-expanded', String(!collapsed));
   $('toggle').setAttribute('aria-hidden', String(!collapsed));
   $('toggle').inert = !collapsed;
@@ -1536,11 +1707,14 @@ $('sidebarClose').addEventListener('click', () => setSidebarCollapsed(true));
 $('scrim').addEventListener('click', () => setSidebarCollapsed(true));
 const narrowControls = window.matchMedia('(max-width: 680px)');
 setSidebarCollapsed(narrowControls.matches);
+camera.viewOffsetX = viewOffsetTarget;
 const collapseForNarrowLayout = (event) => {
   if (event.matches) setSidebarCollapsed(true);
   // Widening keeps the sidebar as it is but drops the narrow-only scrim.
   else $('scrim').hidden = true;
+  updateViewOffset();
 };
+window.addEventListener('resize', updateViewOffset);
 if (narrowControls.addEventListener) {
   narrowControls.addEventListener('change', collapseForNarrowLayout);
 } else {
@@ -1767,6 +1941,7 @@ window.addEventListener('keydown', (event) => {
   if (moveCamera) {
     // Checked before the repeat filter: a held arrow should keep turning.
     event.preventDefault();
+    if (key.startsWith('Arrow') && state.orbiting) setOrbiting(false);
     if (!state.failed) moveCamera();
     return;
   }
@@ -1804,6 +1979,12 @@ window.addEventListener('keydown', (event) => {
       break;
     case 'Home':
       frameWorld();
+      break;
+    case 'o':
+      setOrbiting(!state.orbiting);
+      break;
+    case 'p':
+      state.imageRequested = true;
       break;
     case '/':
     case '?':
@@ -2076,8 +2257,15 @@ function advanceFrame(now) {
     state.fabricDirty = false;
   }
 
+  if (state.orbiting && !drag.body) camera.orbit(frameMs * ORBIT_RATE, 0);
+  camera.viewOffsetX += (viewOffsetTarget - camera.viewOffsetX) * Math.min(1, frameMs / 90);
   drawDebugLines();
+  const frame = state.imageRequested ? renderer.captureNextFrame?.() ?? null : null;
   renderer.render(camera);
+  if (state.imageRequested) {
+    state.imageRequested = false;
+    saveImage(frame);
+  }
 
   hudAccumulator += frameMs;
   if (hudAccumulator > 120) {

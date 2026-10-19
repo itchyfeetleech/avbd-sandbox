@@ -926,7 +926,13 @@ export class RendererWebGPU {
     this.context = canvas.getContext('webgpu');
     if (!this.context) throw new Error('Could not create a WebGPU canvas context.');
     this.format = navigator.gpu.getPreferredCanvasFormat();
-    this.context.configure({ device, format: this.format, alphaMode: 'opaque' });
+    // COPY_SRC lets captureNextFrame copy the presented frame out.
+    this.context.configure({
+      device,
+      format: this.format,
+      alphaMode: 'opaque',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+    });
 
     this.clipZeroToOne = true;
     this.sampleCount = 4;
@@ -1986,12 +1992,58 @@ export class RendererWebGPU {
       fullscreen(targets.views.blur, this.blurPipeline, targets.blurGroups[0]);
       fullscreen(targets.views.ao, this.blurPipeline, targets.blurGroups[1]);
     }
-    fullscreen(
-      this.context.getCurrentTexture().createView(),
-      this.compositePipeline,
-      targets.compositeGroup
-    );
+    const output = this.context.getCurrentTexture();
+    fullscreen(output.createView(), this.compositePipeline, targets.compositeGroup);
+    const capture = this._capture;
+    this._capture = null;
+    let readback = null;
+    if (capture) {
+      const bytesPerRow = Math.ceil((width * 4) / 256) * 256;
+      readback = device.createBuffer({
+        size: bytesPerRow * height,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
+      enc.copyTextureToBuffer({ texture: output }, { buffer: readback, bytesPerRow }, [width, height]);
+      readback.bytesPerRow = bytesPerRow;
+    }
     device.queue.submit([enc.finish()]);
+    if (capture) this._resolveCapture(capture, readback, width, height);
+  }
+
+  /**
+   * The next frame drawn, as RGBA ImageData. Saving a WebGPU canvas with
+   * canvas.toBlob is not dependable (Chrome hands back a black image), so the
+   * presented texture is copied to a buffer in the same submission instead.
+   */
+  captureNextFrame() {
+    this._capture?.reject(new Error('superseded by a newer capture'));
+    return new Promise((resolve, reject) => {
+      this._capture = { resolve, reject };
+    });
+  }
+
+  _resolveCapture(capture, buffer, width, height) {
+    const bgra = this.format.startsWith('bgra');
+    buffer.mapAsync(GPUMapMode.READ).then(() => {
+      const src = new Uint8Array(buffer.getMappedRange());
+      const pixels = new Uint8ClampedArray(width * height * 4);
+      for (let y = 0; y < height; y++) {
+        let i = y * buffer.bytesPerRow;
+        let o = y * width * 4;
+        for (let x = 0; x < width; x++, i += 4, o += 4) {
+          pixels[o] = src[bgra ? i + 2 : i];
+          pixels[o + 1] = src[i + 1];
+          pixels[o + 2] = src[bgra ? i : i + 2];
+          pixels[o + 3] = 255;
+        }
+      }
+      buffer.unmap();
+      buffer.destroy();
+      capture.resolve(new ImageData(pixels, width, height));
+    }, (err) => {
+      buffer.destroy();
+      capture.reject(err);
+    });
   }
 }
 
