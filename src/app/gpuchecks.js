@@ -20,6 +20,7 @@ import { Rigid } from '../physics/rigid.js';
 import { Spring } from '../physics/spring.js';
 import {
   JACOBI_ITERS, MAX_COLORS, SLOT_HEADER, SLOT_STRIDE,
+  colorOrder,
 } from '../physics/gpu/layout.js';
 import { SCENES } from './scenes.js';
 
@@ -46,16 +47,22 @@ async function settle(backend, build, steps, tweak) {
 
 const GROUND = (s) => new Rigid(s, [60, 60, 2], 0, 0.5, [0, 0, -1]);
 
-/** One-step coloring of a chain, used to expose A/B ping-pong parity. */
+/**
+ * One-step coloring of a chain, used to expose A/B ping-pong parity. Linked in
+ * colouring order, so each round settles exactly one more link.
+ */
+const PROPAGATION_ORDER = colorOrder(12);
 async function colorPropagation(backend, rounds) {
   const solver = new Solver();
   solver.defaultParams();
   solver.gravity = 0;
-  let prev = null;
-  for (let i = 0; i < 12; i++) {
-    const body = new Rigid(solver, [0.1, 0.1, 0.1], 1, 0.5, [i * 10, 0, 0]);
-    if (prev) new Spring(solver, prev, body, [0, 0, 0], [0, 0, 0], 1, 10);
-    prev = body;
+  const rank = [];
+  PROPAGATION_ORDER.forEach((index, k) => (rank[index] = k));
+  const bodies = rank.map((k) => new Rigid(solver, [0.1, 0.1, 0.1], 1, 0.5, [k * 10, 0, 0]));
+  for (let k = 1; k < PROPAGATION_ORDER.length; k++) {
+    const a = bodies[PROPAGATION_ORDER[k - 1]];
+    const b = bodies[PROPAGATION_ORDER[k]];
+    new Spring(solver, a, b, [0, 0, 0], [0, 0, 0], 1, 10);
   }
 
   backend.overrideColoring = null;
@@ -329,8 +336,9 @@ export async function runGpuChecks(backend, { big = false } = {}) {
     const three = await colorPropagation(backend, 3);
     backend.colorRounds = previousRounds ?? JACOBI_ITERS;
     backend.encColors = previousColors;
+    const probe = PROPAGATION_ORDER[3];
     add('an odd final colouring round is consumed',
-      three[3] !== two[3],
+      three[probe] !== two[probe],
       `2 rounds [${two.join(', ')}]; 3 rounds [${three.join(', ')}]`);
   }
 

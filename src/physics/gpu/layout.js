@@ -38,6 +38,29 @@ export const MAX_COLORS = 32;
  */
 export const JACOBI_ITERS = 3;
 
+/**
+ * The order bodies claim colours in: the shader's `colorPriority`, mirrored
+ * here for tests that need a graph to colour in a known number of rounds.
+ * lowbias32, an integer hash; ties go to the lower index.
+ */
+export function colorPriority(index) {
+  let x = index >>> 0;
+  x = (x ^ (x >>> 16)) >>> 0;
+  x = Math.imul(x, 0x7feb352d) >>> 0;
+  x = (x ^ (x >>> 15)) >>> 0;
+  x = Math.imul(x, 0x846ca68b) >>> 0;
+  return (x ^ (x >>> 16)) >>> 0;
+}
+
+/**
+ * Body indices 0..n-1 sorted into colouring order. A chain linked in this
+ * order is the worst case for the Jacobi rounds: each settles one more link.
+ */
+export function colorOrder(n) {
+  return Array.from({ length: n }, (_, i) => i)
+    .sort((a, b) => colorPriority(a) - colorPriority(b) || a - b);
+}
+
 /** Contact points the SAT can produce for one box pair (matches collide.js). */
 export const MAX_CONTACTS_PER_MANIFOLD = 8;
 
