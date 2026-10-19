@@ -111,6 +111,22 @@ const wrecker = ({ x = -1.5, z = 8.5 } = {}) =>
  */
 const WIDE = { width: 576, height: 324 };
 
+/** Portrait, for the two tall subjects, which share a row of the README. */
+const TALL = { width: 448, height: 512 };
+
+/** Small 16:9 stills for the lighting comparison, four to a row. */
+const SMALL = { width: 512, height: 288 };
+
+/**
+ * A ball thrown low at the foot of the block tower, from the camera's right,
+ * so the base is knocked left and the tower falls across the frame rather
+ * than toward the lens.
+ */
+const towerShot = ({ solver, Rigid }) => {
+  const ball = Rigid.sphere(solver, 0.9, 6, 0.4, [7.3, 6.8, 1.2], [-10, -9.3, 2.4]);
+  ball.color = [0.88, 0.25, 0.22];
+};
+
 export const SHOTS = [
   // -------------------------------------------------------------------------
   // Stills
@@ -122,7 +138,11 @@ export const SHOTS = [
     width: 1600,
     height: 620,
     supersample: 2,
-    camera: { target: [0, 0, 13], distance: 86, azimuth: -1.02, elevation: 0.29 },
+    // Low sun from behind the camera's left: the lit faces turn to the lens
+    // and the shadow runs back under the type.
+    camera: { target: [0, 0, 12.5], distance: 84, azimuth: 0.75, elevation: 0.22 },
+    // Moves the pyramid right of the title column.
+    screenShift: [370, 0],
     // The apex is a 3x3, 2x2, 1x1 spire on a 53-wide base, and it is the least
     // converged part of the structure: at the shipped ten passes it visibly
     // wanders within half a second. Raising the budget settles it. The tag
@@ -130,46 +150,120 @@ export const SHOTS = [
     // at ten passes, and that is where that claim belongs.
     iterations: 24,
     warmupSteps: 45,
+    environment: 'dusk',
     title: {
-      heading: 'Augmented Vertex Block Descent',
-      sub: 'An exact implementation, with an f64 CPU reference and a parallel WebGPU backend.',
+      heading: 'AVBD Playground',
+      sub: 'A browser physics sandbox on Augmented Vertex Block Descent (SIGGRAPH 2025), with an f64 CPU reference and a parallel WebGPU backend.',
       tag: '51,039 rigid bodies · 53 layers · held up by contact friction alone',
     },
   },
   {
-    // The basin walls stand about six units proud of the settled fill, so this
-    // has to look down over the rim or it photographs the outside of a box.
-    id: 'still-basin',
-    kind: 'still',
-    scene: 'ball_pit',
-    width: 1280,
-    height: 720,
-    supersample: 2,
-    camera: { target: [0, 0, 9], distance: 62, azimuth: -1.15, elevation: 0.74 },
-    warmupSteps: 260,
-    warmupActions: [
-      {
-        atStep: 140,
-        run: launcher({ from: [6, -30, 44], at: [0, 0, 10], speed: 34, diameter: 9, density: 60 }),
-      },
-    ],
-  },
-  {
-    // Close enough to count individual boxes, which is the point: the scale
-    // claim is only interesting if the bodies are visibly separate objects.
-    id: 'still-detail',
+    // GitHub's social card (Settings > Social preview) and the live site's
+    // og:image: 2:1, the hero's composition with room for the type.
+    id: 'social-preview',
     kind: 'still',
     scene: 'great_pyramid',
     width: 1280,
-    height: 720,
+    height: 640,
     supersample: 2,
-    camera: { target: [-14, -14, 7], distance: 26, azimuth: -2.35, elevation: 0.22 },
-    warmupSteps: 240,
+    camera: { target: [0, 0, 12.5], distance: 98, azimuth: 0.75, elevation: 0.22 },
+    screenShift: [340, 0],
+    iterations: 24,
+    warmupSteps: 45,
+    environment: 'dusk',
+    title: {
+      heading: 'AVBD Playground',
+      sub: 'Ragdolls, bridges, wrecking balls and fifty-thousand-body pyramids on Augmented Vertex Block Descent, in the browser.',
+      tag: 'WebGPU · f64 CPU reference · no dependencies',
+    },
   },
-
+  // The same moment under each lighting environment.
+  ...[['daylight', 'Daylight'], ['studio', 'Studio'], ['dusk', 'Dusk'], ['night', 'Blueprint']].map(
+    ([environment]) => ({
+      id: `lighting-${environment === 'night' ? 'blueprint' : environment}`,
+      kind: 'still',
+      scene: 'ragdolls',
+      ...SMALL,
+      supersample: 2,
+      environment,
+      camera: { target: [0.6, 0, 1.3], distance: 13, azimuth: -0.62, elevation: 0.3 },
+      warmupSteps: 105,
+    })
+  ),
   // -------------------------------------------------------------------------
   // Animations
   // -------------------------------------------------------------------------
+  {
+    id: 'ragdolls',
+    kind: 'gif',
+    scene: 'ragdolls',
+    ...WIDE,
+    supersample: 2,
+    warmupSteps: 0,
+    frames: 84,
+    stepsPerFrame: 3,
+    delayCs: 5,
+  },
+  {
+    // The crates land in the first two seconds, the ball at about 2.1 s.
+    id: 'bridge',
+    kind: 'gif',
+    scene: 'bridge',
+    ...WIDE,
+    supersample: 2,
+    warmupSteps: 0,
+    frames: 96,
+    stepsPerFrame: 3,
+    delayCs: 5,
+  },
+  {
+    id: 'wrecking-ball',
+    kind: 'gif',
+    scene: 'wrecking_ball',
+    ...WIDE,
+    supersample: 2,
+    warmupSteps: 0,
+    frames: 110,
+    stepsPerFrame: 3,
+    delayCs: 5,
+  },
+  {
+    // Twenty seconds of draining in four: five times real time.
+    id: 'galton',
+    kind: 'gif',
+    scene: 'galton',
+    ...TALL,
+    supersample: 2,
+    warmupSteps: 0,
+    frames: 80,
+    stepsPerFrame: 15,
+    delayCs: 5,
+  },
+  {
+    id: 'block-tower',
+    kind: 'gif',
+    scene: 'block_tower',
+    ...TALL,
+    supersample: 2,
+    warmupSteps: 0,
+    frames: 90,
+    stepsPerFrame: 3,
+    delayCs: 5,
+    actions: [{ atFrame: 24, run: towerShot }],
+  },
+  {
+    // The push lands at about two seconds and the wave takes ten more to
+    // round the spiral: thirteen seconds played in five and a half.
+    id: 'dominoes',
+    kind: 'gif',
+    scene: 'domino',
+    ...WIDE,
+    supersample: 2,
+    warmupSteps: 0,
+    frames: 110,
+    stepsPerFrame: 7,
+    delayCs: 5,
+  },
   {
     id: 'great-pyramid',
     kind: 'gif',
@@ -185,42 +279,6 @@ export const SHOTS = [
       {
         atFrame: 6,
         run: launcher({ from: [-64, -46, 74], at: [0, 0, 30], speed: 46, diameter: 6, density: 45 }),
-      },
-    ],
-  },
-  {
-    id: 'mega-wall',
-    kind: 'gif',
-    scene: 'mega_wall',
-    ...WIDE,
-    supersample: 2,
-    camera: { target: [0, 0, 9], distance: 104, azimuth: -1.35, elevation: 0.22 },
-    warmupSteps: 180,
-    frames: 90,
-    stepsPerFrame: 3,
-    delayCs: 5,
-    actions: [
-      {
-        atFrame: 5,
-        run: launcher({ from: [-18, -78, 30], at: [-6, 0, 12], speed: 62, diameter: 7, density: 55 }),
-      },
-    ],
-  },
-  {
-    id: 'filled-basin',
-    kind: 'gif',
-    scene: 'ball_pit',
-    ...WIDE,
-    supersample: 2,
-    camera: { target: [0, 0, 9], distance: 66, azimuth: -1.18, elevation: 0.70 },
-    warmupSteps: 240,
-    frames: 90,
-    stepsPerFrame: 3,
-    delayCs: 5,
-    actions: [
-      {
-        atFrame: 5,
-        run: launcher({ from: [4, -34, 46], at: [0, 0, 8], speed: 34, diameter: 9, density: 60 }),
       },
     ],
   },

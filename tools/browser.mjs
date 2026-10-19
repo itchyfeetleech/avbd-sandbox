@@ -129,6 +129,7 @@ export function closeWindowsGeckoWindows(titlePatterns) {
  * @param {string[]} [options.windowTitles] Gecko-on-Windows titles to close
  * @param {string[]} [options.extraGeckoPrefs]
  * @param {[number, number]} [options.size] window size
+ * @param {string[]} [options.extraArgs] more Chrome or Chromium switches
  * @returns {{ child: import('node:child_process').ChildProcess, close(): void }}
  */
 export function launchBrowser(browser, url, {
@@ -137,6 +138,7 @@ export function launchBrowser(browser, url, {
   windowTitles = [],
   extraGeckoPrefs = [],
   size = [900, 620],
+  extraArgs = [],
 } = {}) {
   if (headless && isGecko(browser)) {
     throw new Error('Headless runs need Chrome or Chromium; headless Firefox has no WebGPU adapter.');
@@ -182,6 +184,7 @@ export function launchBrowser(browser, url, {
     // runners may not grant the user namespaces the sandbox needs. Both are
     // disposable machines loading this repository's own pages.
     if (process.getuid?.() === 0 || process.env.CI) args.push('--no-sandbox');
+    args.push(...extraArgs);
   }
 
   const child = spawn(browser, [...args, url], { stdio: 'ignore' });
